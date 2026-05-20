@@ -14,19 +14,19 @@ interface AuthState {
   user: User | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  login: (username: string) => Promise<void>;
+  login: (username: string, password: string) => Promise<boolean>;
+  register: (username: string, fullName: string, password: string) => Promise<boolean>;
   logout: () => Promise<void>;
+  updateProfile: (updates: { username: string; full_name: string; avatar_url: string }) => Promise<boolean>;
   checkAuth: () => void;
 }
 
-// Специальная функция для создания безопасного email из любого логина (включая русский язык)
 const generateSafeEmail = (username: string) => {
-  // Конвертируем строку в безопасный латинский формат, убирая все спецсимволы
-  const safeString = btoa(encodeURIComponent(username)).replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+  const safeString = btoa(encodeURIComponent(username.trim().toLowerCase())).replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
   return `${safeString}@risala.app`;
 };
 
-export const useAuthStore = create<AuthState>((set) => ({
+export const useAuthStore = create<AuthState>((set, get) => ({
   user: null,
   isAuthenticated: false,
   isLoading: false,
@@ -46,40 +46,17 @@ export const useAuthStore = create<AuthState>((set) => ({
     }
   },
 
-  login: async (username: string) => {
+  login: async (username: string, password: string) => {
     set({ isLoading: true });
-    const cleanUsername = username.trim().toLowerCase();
-    
-    // Генерируем email, который точно понравится Supabase
-    const dummyEmail = generateSafeEmail(cleanUsername);
-    const dummyPassword = `${generateSafeEmail(cleanUsername)}-Risala-2026!`;
+    const dummyEmail = generateSafeEmail(username);
 
     try {
-      let { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
         email: dummyEmail,
-        password: dummyPassword,
+        password: password,
       });
 
-      if (authError && authError.message.includes('Invalid login credentials')) {
-        const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-          email: dummyEmail,
-          password: dummyPassword,
-          options: {
-            data: {
-              username: cleanUsername,
-              full_name: username.trim(),
-              avatar_url: `https://api.dicebear.com/7.x/bottts/svg?seed=${cleanUsername}`
-            }
-          }
-        });
-        
-        if (signUpError) throw signUpError;
-        authData = signUpData;
-        
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      } else if (authError) {
-        throw authError;
-      }
+      if (authError) throw authError;
 
       if (authData.user) {
         const { data: profile, error: profileError } = await supabase
@@ -90,29 +67,100 @@ export const useAuthStore = create<AuthState>((set) => ({
 
         if (profileError) throw profileError;
 
-        await supabase
-          .from('profiles')
-          .update({ is_online: true })
-          .eq('id', profile.id);
-
-        const updatedUser = { ...profile, is_online: true };
-        set({ user: updatedUser, isAuthenticated: true, isLoading: false });
+        await supabase.from('profiles').update({ is_online: true }).eq('id', profile.id);
+        set({ user: { ...profile, is_online: true }, isAuthenticated: true, isLoading: false });
+        return true;
       }
-
+      return false;
     } catch (error: any) {
-      console.error('Ошибка входа/регистрации:', error.message);
-      alert('Ошибка: ' + error.message);
+      console.error('Ошибка входа:', error.message);
+      alert('Неверный логин или пароль');
       set({ isLoading: false });
+      return false;
+    }
+  },
+
+  register: async (username: string, fullName: string, password: string) => {
+    set({ isLoading: true });
+    const cleanUsername = username.trim().toLowerCase();
+    const dummyEmail = generateSafeEmail(username);
+
+    try {
+      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+        email: dummyEmail,
+        password: password,
+        options: {
+          data: {
+            username: cleanUsername,
+            full_name: fullName.trim(),
+            avatar_url: `https://api.dicebear.com/7.x/bottts/svg?seed=${cleanUsername}`
+          }
+        }
+      });
+
+      if (signUpError) throw signUpError;
+
+      if (signUpData.user) {
+        // Даем триггеру в базе 1.5 секунды на гарантированное создание профиля
+        await new Promise(resolve => setTimeout(resolve, 1500));
+
+        const { data: profile, error: profileError } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', signUpData.user.id)
+          .single();
+
+        if (profileError) throw profileError;
+
+        await supabase.from('profiles').update({ is_online: true }).eq('id', profile.id);
+        set({ user: { ...profile, is_online: true }, isAuthenticated: true, isLoading: false });
+        return true;
+      }
+      return false;
+    } catch (error: any) {
+      console.error('Ошибка регистрации:', error.message);
+      alert('Ошибка при регистрации: ' + error.message);
+      set({ isLoading: false });
+      return false;
+    }
+  },
+
+  updateProfile: async (updates: { username: string; full_name: string; avatar_url: string }) => {
+    const currentUser = get().user;
+    if (!currentUser?.id) return false;
+
+    set({ isLoading: true });
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .update({
+          username: updates.username.trim().toLowerCase(),
+          full_name: updates.full_name.trim(),
+          avatar_url: updates.avatar_url.trim()
+        })
+        .eq('id', currentUser.id)
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      if (data) {
+        set({ user: data, isLoading: false });
+        return true;
+      }
+      return false;
+    } catch (error: any) {
+      console.error('Ошибка обновления профиля:', error.message);
+      alert('Ошибка: Возможно, этот логин уже занят другим пользователем.');
+      set({ isLoading: false });
+      return false;
     }
   },
 
   logout: async () => {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (session?.user) {
-      await supabase
-        .from('profiles')
-        .update({ is_online: false })
-        .eq('id', session.user.id);
+    const currentUser = get().user;
+    if (currentUser?.id) {
+      await supabase.from('profiles').update({ is_online: false }).eq('id', currentUser.id);
     }
     await supabase.auth.signOut();
     set({ user: null, isAuthenticated: false });
