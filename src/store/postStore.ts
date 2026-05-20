@@ -1,92 +1,84 @@
 import { create } from 'zustand';
-
-
-export interface Comment {
-  id: string;
-  user_id: string;
-  content: string;
-  created_at: string;
-}
+import { supabase } from '../lib/supabase';
 
 export interface Post {
   id: string;
   user_id: string;
   content: string;
   image_url?: string;
-  likes: string[]; // array of user_ids
-  comments: Comment[];
   created_at: string;
+  likes: string[]; // Массив ID пользователей, лайкнувших пост
+  comments: any[];
 }
 
 interface PostState {
   posts: Post[];
-  addPost: (content: string, image_url?: string) => void;
-  likePost: (postId: string, userId: string) => void;
-  addComment: (postId: string, userId: string, content: string) => void;
+  isLoading: boolean;
+  fetchPosts: () => Promise<void>;
+  addPost: (userId: string, content: string, imageUrl?: string) => Promise<void>;
+  deletePost: (postId: string) => Promise<void>;
 }
 
-const MOCK_POSTS: Post[] = [
-  {
-    id: 'p1',
-    user_id: 'mock-1',
-    content: 'Всем привет! Наконец-то закончил новый проект. Посмотрите как круто получилось! 🚀',
-    image_url: 'https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=800&q=80',
-    likes: ['mock-2', 'mock-3'],
-    comments: [
-      { id: 'c1', user_id: 'mock-2', content: 'Выглядит отлично!', created_at: new Date().toISOString() }
-    ],
-    created_at: new Date(Date.now() - 86400000).toISOString()
-  },
-  {
-    id: 'p2',
-    user_id: 'mock-3',
-    content: 'Сегодня отличный день для продуктивной работы. Пьем кофе и пишем код ☕💻',
-    likes: ['mock-1'],
-    comments: [],
-    created_at: new Date(Date.now() - 43200000).toISOString()
-  }
-];
+export const usePostStore = create<PostState>((set, get) => ({
+  posts: [],
+  isLoading: false,
 
-export const usePostStore = create<PostState>((set) => ({
-  posts: MOCK_POSTS,
-  addPost: (content, image_url) => set((state) => {
-    const newPost: Post = {
-      id: Math.random().toString(36).substring(7),
-      user_id: '123e4567-e89b-12d3-a456-426614174000', // Mock logged in user
-      content,
-      image_url,
-      likes: [],
-      comments: [],
-      created_at: new Date().toISOString()
-    };
-    return { posts: [newPost, ...state.posts] };
-  }),
-  likePost: (postId, userId) => set((state) => ({
-    posts: state.posts.map(post => {
-      if (post.id === postId) {
-        const isLiked = post.likes.includes(userId);
+  fetchPosts: async () => {
+    set({ isLoading: true });
+    // Получаем посты, сортируем по дате (новые сверху)
+    const { data: postsData, error } = await supabase
+      .from('posts')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Ошибка загрузки постов:', error);
+      set({ isLoading: false });
+      return;
+    }
+
+    // Для каждого поста получаем лайки (пока упрощенно)
+    const formattedPosts = await Promise.all(
+      postsData.map(async (post) => {
+        const { data: likes } = await supabase.from('post_likes').select('user_id').eq('post_id', post.id);
+        const { data: comments } = await supabase.from('post_comments').select('*').eq('post_id', post.id);
+        
         return {
           ...post,
-          likes: isLiked ? post.likes.filter(id => id !== userId) : [...post.likes, userId]
+          likes: likes ? likes.map(l => l.user_id) : [],
+          comments: comments || [],
         };
-      }
-      return post;
-    })
-  })),
-  addComment: (postId, userId, content) => set((state) => ({
-    posts: state.posts.map(post => {
-      if (post.id === postId) {
-        return {
-          ...post,
-          comments: [...post.comments, {
-            id: Math.random().toString(36).substring(7),
-            user_id: userId,
-            content,
-            created_at: new Date().toISOString()
-          }]
-        };
-      }
-      return post;
-    })
-  }))
+      })
+    );
+
+    set({ posts: formattedPosts, isLoading: false });
+  },
+
+  addPost: async (userId: string, content: string, imageUrl?: string) => {
+    const { error } = await supabase
+      .from('posts')
+      .insert([{ user_id: userId, content, image_url: imageUrl }]);
+
+    if (error) {
+      console.error('Ошибка при создании поста:', error);
+    } else {
+      get().fetchPosts(); // Обновляем ленту
+    }
+  },
+
+  deletePost: async (postId: string) => {
+    const { error } = await supabase
+      .from('posts')
+      .delete()
+      .eq('id', postId);
+
+    if (error) {
+      console.error('Ошибка удаления поста:', error);
+    } else {
+      // Убираем пост из локального состояния
+      set((state) => ({
+        posts: state.posts.filter((p) => p.id !== postId)
+      }));
+    }
+  }
 }));
