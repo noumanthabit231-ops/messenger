@@ -31,17 +31,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setActiveChat: (chat) => set({ activeChat: chat, messages: [] }),
 
-  addMessage: (msg) =>
-    set((state) => ({
-      messages: state.messages.find((m) => m.id === msg.id) ? state.messages : [...state.messages, msg],
-    })),
+  addMessage: (msg) => set((state) => ({
+    messages: state.messages.find(m => m.id === msg.id) ? state.messages : [...state.messages, msg],
+  })),
 
-  updateMessageStatus: (messageId, isRead) =>
-    set((state) => ({
-      messages: state.messages.map((msg) =>
-        msg.id === messageId ? { ...msg, is_read: isRead, status: isRead ? 'read' : msg.status } : msg
-      ),
-    })),
+  updateMessageStatus: (messageId, isRead) => set((state) => ({
+    messages: state.messages.map(msg => msg.id === messageId ? { ...msg, is_read: isRead, status: isRead ? 'read' : msg.status } : msg),
+  })),
 
   loadMessages: async (userId, contactId) => {
     set({ isLoading: true });
@@ -50,12 +46,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
       .select('*')
       .or(`and(sender_id.eq.${userId},receiver_id.eq.${contactId}),and(sender_id.eq.${contactId},receiver_id.eq.${userId})`)
       .order('created_at', { ascending: true });
-
     if (!error && data) {
-      const withStatus = data.map((msg) => ({
-        ...msg,
-        status: msg.is_read ? 'read' : 'sent',
-      }));
+      const withStatus = data.map(msg => ({ ...msg, status: msg.is_read ? 'read' : 'sent' }));
       set({ messages: withStatus, isLoading: false });
     } else {
       set({ isLoading: false });
@@ -65,33 +57,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
   sendMessage: async (senderId, receiverId, content, type = 'text', fileUrl) => {
     const tempId = Date.now().toString();
     const tempMessage: Message = {
-      id: tempId,
-      sender_id: senderId,
-      receiver_id: receiverId,
-      content,
-      message_type: type as any,
-      file_url: fileUrl,
-      is_read: false,
-      created_at: new Date().toISOString(),
-      status: 'sending',
+      id: tempId, sender_id: senderId, receiver_id: receiverId, content, message_type: type as any,
+      file_url: fileUrl, is_read: false, created_at: new Date().toISOString(), status: 'sending',
     };
-    set((state) => ({ messages: [...state.messages, tempMessage] }));
-
+    set(state => ({ messages: [...state.messages, tempMessage] }));
     const { data, error } = await supabase
       .from('messages')
       .insert([{ sender_id: senderId, receiver_id: receiverId, content, message_type: type, file_url: fileUrl }])
-      .select()
-      .single();
-
+      .select().single();
     if (!error && data) {
-      set((state) => ({
-        messages: state.messages.map((msg) =>
-          msg.id === tempId ? { ...data, status: 'sent' } : msg
-        ),
-      }));
+      set(state => ({ messages: state.messages.map(msg => msg.id === tempId ? { ...data, status: 'sent' } : msg) }));
     } else {
-      // Удалить временное сообщение при ошибке
-      set((state) => ({ messages: state.messages.filter((m) => m.id !== tempId) }));
+      set(state => ({ messages: state.messages.filter(m => m.id !== tempId) }));
       console.error('Ошибка отправки:', error);
     }
   },
