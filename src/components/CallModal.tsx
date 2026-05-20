@@ -34,13 +34,11 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
 
     const init = async () => {
       try {
-        // 1. Получаем локальные медиа
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: isVideo });
         if (!isActive) return;
         setLocalStream(stream);
         if (localVideoRef.current) localVideoRef.current.srcObject = stream;
 
-        // 2. Создаём peer connection
         const pc = new RTCPeerConnection(configuration);
         peerConnectionRef.current = pc;
 
@@ -69,7 +67,6 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
           }
         };
 
-        // 3. Создаём канал сигнализации (общий для обоих)
         const channelName = `call:${[currentUserId, targetUserId].sort().join(':')}`;
         const channel = supabase.channel(channelName);
         channelRef.current = channel;
@@ -94,8 +91,6 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
           })
           .subscribe(async (status) => {
             if (status === 'SUBSCRIBED') {
-              // Если мы инициатор – отправляем offer
-              // Определяем, кто инициатор: сравниваем ID (меньший ID будет инициатором для детерминизма)
               const isInitiator = currentUserId.localeCompare(targetUserId) < 0;
               if (isInitiator && pc.signalingState === 'stable') {
                 const offer = await pc.createOffer();
