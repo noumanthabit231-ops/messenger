@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { usePostStore } from '../store/postStore';
 import { useAuthStore } from '../store/authStore';
 import { supabase } from '../lib/supabase';
-import { Heart, MessageCircle, Image as ImageIcon, Send, Trash2 } from 'lucide-react';
+import { Heart, MessageCircle, Image as ImageIcon, Trash2 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import { ru } from 'date-fns/locale';
 import clsx from 'clsx';
