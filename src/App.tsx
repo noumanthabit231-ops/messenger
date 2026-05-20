@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from './store/authStore';
 import { useBadgeStore } from './store/badgeStore';
+import { supabase } from './lib/supabase';
 import Layout from './components/Layout';
 import AuthPage from './pages/AuthPage';
 import MessagesPage from './pages/MessagesPage';
@@ -23,6 +24,22 @@ function App() {
       return () => cleanup();
     }
   }, [isAuthenticated, user, initBadges, cleanup]);
+
+  // Обновление last_seen каждые 30 секунд и при закрытии вкладки
+  useEffect(() => {
+    if (!user?.id) return;
+    const interval = setInterval(async () => {
+      await supabase.from('profiles').update({ last_seen: new Date().toISOString() }).eq('id', user.id);
+    }, 30000);
+    const handleBeforeUnload = async () => {
+      await supabase.from('profiles').update({ is_online: false, last_seen: new Date().toISOString() }).eq('id', user.id);
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [user]);
 
   if (isLoading) {
     return (
