@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
-import { X, Mic, MicOff, Video, VideoOff, PhoneOff, Phone } from 'lucide-react';
+import { X, Mic, MicOff, Video, VideoOff, PhoneOff } from 'lucide-react';
 
 interface CallModalProps {
   isOpen: boolean;
@@ -17,7 +17,6 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
   const [isMuted, setIsMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'ended'>('connecting');
-  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
@@ -31,72 +30,92 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
   useEffect(() => {
     if (!isOpen) return;
 
-    const initCall = async () => {
-      // Получаем локальные медиа
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: isVideo });
-      setLocalStream(stream);
-      if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+    let isActive = true;
 
-      // Создаем peer connection
-      const pc = new RTCPeerConnection(configuration);
-      peerConnectionRef.current = pc;
+    const init = async () => {
+      try {
+        // 1. Получаем локальные медиа
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: isVideo });
+        if (!isActive) return;
+        setLocalStream(stream);
+        if (localVideoRef.current) localVideoRef.current.srcObject = stream;
 
-      stream.getTracks().forEach(track => pc.addTrack(track, stream));
+        // 2. Создаём peer connection
+        const pc = new RTCPeerConnection(configuration);
+        peerConnectionRef.current = pc;
 
-      pc.ontrack = (event) => {
-        setRemoteStream(event.streams[0]);
-        if (remoteVideoRef.current) remoteVideoRef.current.srcObject = event.streams[0];
-      };
+        stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
-      pc.onicecandidate = (event) => {
-        if (event.candidate && channelRef.current) {
-          channelRef.current.send({
-            type: 'broadcast',
-            event: 'ice_candidate',
-            payload: { candidate: event.candidate, to: targetUserId, from: currentUserId }
-          });
-        }
-      };
+        pc.ontrack = (event) => {
+          if (!isActive) return;
+          setRemoteStream(event.streams[0]);
+          if (remoteVideoRef.current) remoteVideoRef.current.srcObject = event.streams[0];
+          setConnectionStatus('connected');
+        };
 
-      // Подписываемся на канал сигнализации
-      const channel = supabase.channel(`call:${currentUserId}:${targetUserId}`);
-      channelRef.current = channel;
+        pc.onicecandidate = (event) => {
+          if (event.candidate && channelRef.current) {
+            channelRef.current.send({
+              type: 'broadcast',
+              event: 'ice_candidate',
+              payload: { candidate: event.candidate }
+            });
+          }
+        };
 
-      channel
-        .on('broadcast', { event: 'offer' }, async ({ payload }) => {
-          if (payload.from === targetUserId) {
+        pc.onconnectionstatechange = () => {
+          if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+            endCall();
+          }
+        };
+
+        // 3. Создаём канал сигнализации (общий для обоих)
+        const channelName = `call:${[currentUserId, targetUserId].sort().join(':')}`;
+        const channel = supabase.channel(channelName);
+        channelRef.current = channel;
+
+        channel
+          .on('broadcast', { event: 'offer' }, async ({ payload }) => {
+            if (!pc) return;
             await pc.setRemoteDescription(new RTCSessionDescription(payload.offer));
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
-            channel.send({ type: 'broadcast', event: 'answer', payload: { answer, to: targetUserId, from: currentUserId } });
-          }
-        })
-        .on('broadcast', { event: 'answer' }, async ({ payload }) => {
-          if (payload.from === targetUserId) {
+            channel.send({ type: 'broadcast', event: 'answer', payload: { answer } });
+          })
+          .on('broadcast', { event: 'answer' }, async ({ payload }) => {
+            if (!pc) return;
             await pc.setRemoteDescription(new RTCSessionDescription(payload.answer));
-          }
-        })
-        .on('broadcast', { event: 'ice_candidate' }, async ({ payload }) => {
-          if (payload.from === targetUserId && payload.candidate) {
-            await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
-          }
-        })
-        .subscribe();
+          })
+          .on('broadcast', { event: 'ice_candidate' }, async ({ payload }) => {
+            if (!pc) return;
+            try {
+              await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
+            } catch (e) { console.warn('ICE candidate error', e); }
+          })
+          .subscribe(async (status) => {
+            if (status === 'SUBSCRIBED') {
+              // Если мы инициатор – отправляем offer
+              // Определяем, кто инициатор: сравниваем ID (меньший ID будет инициатором для детерминизма)
+              const isInitiator = currentUserId.localeCompare(targetUserId) < 0;
+              if (isInitiator && pc.signalingState === 'stable') {
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                channel.send({ type: 'broadcast', event: 'offer', payload: { offer } });
+              }
+            }
+          });
 
-      // Если мы инициатор, отправляем offer
-      const isInitiator = true; // упрощённо: всегда инициатор тот, кто нажал кнопку
-      if (isInitiator) {
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        channel.send({ type: 'broadcast', event: 'offer', payload: { offer, to: targetUserId, from: currentUserId } });
+      } catch (err) {
+        console.error('Ошибка инициализации звонка:', err);
+        alert('Не удалось получить доступ к камере/микрофону');
+        onClose();
       }
-
-      setConnectionStatus('connected');
     };
 
-    initCall();
+    init();
 
     return () => {
+      isActive = false;
       if (localStream) localStream.getTracks().forEach(track => track.stop());
       if (peerConnectionRef.current) peerConnectionRef.current.close();
       if (channelRef.current) supabase.removeChannel(channelRef.current);
@@ -120,20 +139,6 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
     }
   };
 
-  const switchCamera = async () => {
-    if (!isVideo) return;
-    const newFacingMode = facingMode === 'user' ? 'environment' : 'user';
-    const newStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: { facingMode: { exact: newFacingMode } } });
-    if (localStream) localStream.getTracks().forEach(track => track.stop());
-    setLocalStream(newStream);
-    if (localVideoRef.current) localVideoRef.current.srcObject = newStream;
-    // Заменяем треки в peer connection
-    const senders = peerConnectionRef.current?.getSenders();
-    const videoSender = senders?.find(s => s.track?.kind === 'video');
-    if (videoSender) videoSender.replaceTrack(newStream.getVideoTracks()[0]);
-    setFacingMode(newFacingMode);
-  };
-
   const endCall = () => {
     setConnectionStatus('ended');
     onClose();
@@ -148,24 +153,20 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
           <X className="text-white" size={24} />
         </button>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4">
-          {/* Видео собеседника */}
           <div className="relative bg-black rounded-xl overflow-hidden aspect-video">
             {isVideo ? (
               <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
             ) : (
-              <div className="flex items-center justify-center h-full">
-                <Phone size={48} className="text-gray-600" />
+              <div className="flex flex-col items-center justify-center h-full">
+                <PhoneOff size={48} className="text-gray-600" />
                 <p className="text-white mt-2">{targetUserName}</p>
               </div>
             )}
             {!remoteStream && isVideo && <div className="absolute inset-0 flex items-center justify-center text-gray-400">Ожидание соединения...</div>}
           </div>
-          {/* Локальное видео (preview) */}
           <div className="relative bg-black rounded-xl overflow-hidden aspect-video">
             <video ref={localVideoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
-            {isVideo && (
-              <div className="absolute bottom-2 left-2 text-xs bg-black/50 px-2 py-1 rounded text-white">Вы</div>
-            )}
+            {isVideo && <div className="absolute bottom-2 left-2 text-xs bg-black/50 px-2 py-1 rounded text-white">Вы</div>}
           </div>
         </div>
         <div className="flex justify-center space-x-6 p-4 bg-gray-800">
@@ -173,14 +174,9 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
             {isMuted ? <MicOff size={24} className="text-red-500" /> : <Mic size={24} className="text-white" />}
           </button>
           {isVideo && (
-            <>
-              <button onClick={toggleCamera} className="p-3 bg-gray-700 rounded-full hover:bg-gray-600">
-                {isCameraOff ? <VideoOff size={24} className="text-red-500" /> : <Video size={24} className="text-white" />}
-              </button>
-              <button onClick={switchCamera} className="p-3 bg-gray-700 rounded-full hover:bg-gray-600 text-white text-xs">
-                🔄
-              </button>
-            </>
+            <button onClick={toggleCamera} className="p-3 bg-gray-700 rounded-full hover:bg-gray-600">
+              {isCameraOff ? <VideoOff size={24} className="text-red-500" /> : <Video size={24} className="text-white" />}
+            </button>
           )}
           <button onClick={endCall} className="p-3 bg-red-600 rounded-full hover:bg-red-700">
             <PhoneOff size={24} className="text-white" />
