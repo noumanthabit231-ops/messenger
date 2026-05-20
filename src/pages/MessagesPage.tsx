@@ -1,12 +1,12 @@
+// src/pages/MessagesPage.tsx
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useChatStore } from '../store/chatStore';
 import { useAuthStore } from '../store/authStore';
 import { useBadgeStore } from '../store/badgeStore';
 import { supabase } from '../lib/supabase';
-import { Send, Mic, Paperclip, Phone, Video, MoreVertical, Play, Square, MessageSquare, ChevronLeft, Check, CheckCheck, Clock } from 'lucide-react';
+import { Send, Mic, Paperclip, Play, Square, MessageSquare, ChevronLeft, Check, CheckCheck, Clock } from 'lucide-react';
 import { format } from 'date-fns';
 import clsx from 'clsx';
-import debounce from 'lodash/debounce';
 
 export default function MessagesPage() {
   const { user } = useAuthStore();
@@ -16,13 +16,18 @@ export default function MessagesPage() {
   const [inputText, setInputText] = useState('');
   const [realUsers, setRealUsers] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
-  const [typingStatus, setTypingStatus] = useState<{ [userId: string]: { typing: boolean; voice?: boolean } }>({});
+  const [typingStatus, setTypingStatus] = useState<{ [userId: string]: boolean }>({});
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const recordingInterval = useRef<NodeJS.Timeout | null>(null);
-  const typingChannel = useRef<any>(null);
+  
+  // Refs для realtime каналов и активного чата
+  const messagesChannelRef = useRef<any>(null);
+  const typingChannelRef = useRef<any>(null);
+  const activeChatIdRef = useRef<string | null>(null);
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Загрузка пользователей
   useEffect(() => {
@@ -54,77 +59,102 @@ export default function MessagesPage() {
     }
   }, [user, messages, updateMessageStatus, refreshBadges]);
 
-  // Загрузка сообщений и подписка на realtime
+  // Эффект для загрузки сообщений и подписки на realtime при смене чата
   useEffect(() => {
     if (!activeChat || !user) return;
 
+    // Обновляем ref активного чата
+    activeChatIdRef.current = activeChat.id;
+
+    // Загружаем сообщения
     loadMessages(user.id, activeChat.id);
+    // Отмечаем входящие сообщения как прочитанные
     markMessagesAsRead(activeChat.id);
 
-    // Подписка на новые сообщения
-    const messagesChannel = supabase
-      .channel('messages_realtime')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `receiver_id=eq.${user.id}` }, (payload) => {
-        if (payload.new.sender_id === activeChat.id) {
+    // Отписываемся от старых каналов
+    if (messagesChannelRef.current) {
+      supabase.removeChannel(messagesChannelRef.current);
+      messagesChannelRef.current = null;
+    }
+    if (typingChannelRef.current) {
+      supabase.removeChannel(typingChannelRef.current);
+      typingChannelRef.current = null;
+    }
+
+    // Подписка на новые сообщения (только для текущего чата)
+    messagesChannelRef.current = supabase
+      .channel(`messages:${user.id}:${activeChat.id}`)
+      .on('postgres_changes', { 
+        event: 'INSERT', 
+        schema: 'public', 
+        table: 'messages',
+        filter: `receiver_id=eq.${user.id}` 
+      }, (payload) => {
+        // Проверяем, что сообщение от текущего активного чата и чат не изменился
+        if (payload.new.sender_id === activeChatIdRef.current) {
           addMessage({ ...payload.new, status: 'sent' });
-          markMessagesAsRead(activeChat.id);
+          // Сразу отмечаем как прочитанное, так как мы в этом чате
+          markMessagesAsRead(activeChatIdRef.current);
         }
       })
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages', filter: `receiver_id=eq.${user.id}` }, (payload) => {
-        if (payload.new.is_read && payload.new.sender_id === activeChat.id) {
+      .on('postgres_changes', { 
+        event: 'UPDATE', 
+        schema: 'public', 
+        table: 'messages',
+        filter: `receiver_id=eq.${user.id}` 
+      }, (payload) => {
+        // Обновление статуса прочитано
+        if (payload.new.is_read && payload.new.sender_id === activeChatIdRef.current) {
           updateMessageStatus(payload.new.id, true);
         }
       })
       .subscribe();
 
     // Канал для статуса "печатает"
-    if (typingChannel.current) supabase.removeChannel(typingChannel.current);
-    typingChannel.current = supabase.channel(`typing:${user.id}:${activeChat.id}`, {
-      config: { presence: { key: user.id } }
-    });
-    typingChannel.current
+    typingChannelRef.current = supabase.channel(`typing:${user.id}:${activeChat.id}`);
+    typingChannelRef.current
       .on('broadcast', { event: 'typing' }, ({ payload }) => {
-        if (payload.senderId === activeChat.id) {
-          setTypingStatus(prev => ({ ...prev, [activeChat.id]: { typing: payload.isTyping } }));
-        }
-      })
-      .on('broadcast', { event: 'voice_typing' }, ({ payload }) => {
-        if (payload.senderId === activeChat.id) {
-          setTypingStatus(prev => ({ ...prev, [activeChat.id]: { ...prev[activeChat.id], voice: payload.isRecording } }));
+        if (payload.senderId === activeChatIdRef.current) {
+          setTypingStatus(prev => ({ ...prev, [activeChatIdRef.current!]: payload.isTyping }));
         }
       })
       .subscribe();
 
     return () => {
-      supabase.removeChannel(messagesChannel);
-      if (typingChannel.current) supabase.removeChannel(typingChannel.current);
+      // При размонтировании или смене чата отписываемся
+      if (messagesChannelRef.current) {
+        supabase.removeChannel(messagesChannelRef.current);
+        messagesChannelRef.current = null;
+      }
+      if (typingChannelRef.current) {
+        supabase.removeChannel(typingChannelRef.current);
+        typingChannelRef.current = null;
+      }
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     };
   }, [activeChat, user, loadMessages, addMessage, updateMessageStatus, markMessagesAsRead]);
 
   // Отправка статуса "печатает"
-  const emitTyping = useCallback(
-    debounce((isTyping: boolean) => {
-      if (!activeChat || !user) return;
-      typingChannel.current?.send({
-        type: 'broadcast',
-        event: 'typing',
-        payload: { senderId: user.id, isTyping }
-      });
-    }, 300),
-    [activeChat, user]
-  );
+  const emitTyping = useCallback((isTyping: boolean) => {
+    if (!activeChat || !user || !typingChannelRef.current) return;
+    typingChannelRef.current.send({
+      type: 'broadcast',
+      event: 'typing',
+      payload: { senderId: user.id, isTyping }
+    });
+  }, [activeChat, user]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setInputText(e.target.value);
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     emitTyping(true);
-    emitTyping.flush?.();
-    setTimeout(() => emitTyping(false), 1500);
+    typingTimeoutRef.current = setTimeout(() => emitTyping(false), 1500);
   };
 
-  // Голосовые уведомления о записи
+  // Голосовые уведомления о записи (опционально)
   useEffect(() => {
-    if (!activeChat || !user) return;
-    typingChannel.current?.send({
+    if (!activeChat || !user || !typingChannelRef.current) return;
+    typingChannelRef.current.send({
       type: 'broadcast',
       event: 'voice_typing',
       payload: { senderId: user.id, isRecording }
@@ -140,6 +170,7 @@ export default function MessagesPage() {
     if (inputText.trim() && user && activeChat) {
       await sendMessage(user.id, activeChat.id, inputText.trim(), 'text');
       setInputText('');
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
       emitTyping(false);
     }
   };
@@ -170,8 +201,6 @@ export default function MessagesPage() {
     const nick = u.username?.toLowerCase() || '';
     return name.includes(searchQuery.toLowerCase()) || nick.includes(searchQuery.toLowerCase());
   });
-
-  const activeTyping = activeChat ? typingStatus[activeChat.id] : null;
 
   return (
     <div className="flex h-full bg-[#1a202c]">
@@ -216,7 +245,7 @@ export default function MessagesPage() {
                 <div className="min-w-0">
                   <h2 className="text-gray-100 font-medium truncate">{activeChat.full_name || activeChat.username}</h2>
                   <p className={clsx("text-xs font-medium", activeChat.is_online ? "text-green-400" : "text-gray-400")}>
-                    {activeTyping?.typing ? 'Печатает...' : activeTyping?.voice ? 'Записывает голосовое...' : (activeChat.is_online ? 'В сети' : 'Не в сети')}
+                    {typingStatus[activeChat.id] ? 'Печатает...' : (activeChat.is_online ? 'В сети' : 'Не в сети')}
                   </p>
                 </div>
               </div>
