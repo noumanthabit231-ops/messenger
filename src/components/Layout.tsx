@@ -1,6 +1,6 @@
 import { Outlet, NavLink } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
-import { MessageSquare, Users, UserPlus, Image as ImageIcon, LogOut, Bell } from 'lucide-react';
+import { MessageSquare, Users, UserPlus, Image as ImageIcon, LogOut, Bell, User } from 'lucide-react';
 
 export default function Layout() {
   const { user, logout } = useAuthStore();
@@ -10,12 +10,13 @@ export default function Layout() {
     { to: '/friends', icon: Users, label: 'Друзья' },
     { to: '/people', icon: UserPlus, label: 'Люди' },
     { to: '/feed', icon: ImageIcon, label: 'Лента' },
+    { to: '/profile', icon: User, label: 'Профиль' }, // Добавлен профиль
   ];
 
   return (
     <div className="flex flex-col md:flex-row h-[100dvh] bg-[#1a202c] text-gray-100 font-sans overflow-hidden">
       
-      {/* Левый десктопный сайдбар — автоматически скрывается на экранах мобильных телефонов */}
+      {/* Десктопная панель */}
       <aside className="hidden md:flex w-64 bg-[#2d3748] border-r border-[#4a5568] flex-col shrink-0">
         <div className="p-4 border-b border-[#4a5568] flex items-center space-x-3 shrink-0">
           <div className="w-10 h-10 rounded-full bg-blue-500 flex items-center justify-center text-xl font-bold overflow-hidden shadow-inner shrink-0">
@@ -38,9 +39,7 @@ export default function Layout() {
               to={item.to}
               className={({ isActive }) =>
                 `flex items-center space-x-3 px-4 py-3 rounded-xl transition-all font-medium text-sm ${
-                  isActive
-                    ? 'bg-blue-500 text-white shadow-md'
-                    : 'text-gray-300 hover:bg-[#4a5568] hover:text-white'
+                  isActive ? 'bg-blue-500 text-white shadow-md' : 'text-gray-300 hover:bg-[#4a5568] hover:text-white'
                 }`
               }
             >
@@ -56,15 +55,13 @@ export default function Layout() {
             className="flex items-center space-x-3 text-gray-300 hover:text-red-400 px-4 py-2.5 w-full transition-colors font-medium text-sm rounded-xl hover:bg-[#4a5568]/50"
           >
             <LogOut size={18} />
-            <span>Выйти из аккаунта</span>
+            <span>Выйти</span>
           </button>
         </div>
       </aside>
 
-      {/* Центральный рабочий блок */}
+      {/* Контентная зона */}
       <main className="flex-1 flex flex-col overflow-hidden relative min-w-0">
-        
-        {/* Шапка приложения */}
         <header className="h-16 border-b border-[#4a5568] bg-[#2d3748] flex items-center justify-between px-4 md:px-6 shrink-0 shadow-sm z-10">
           <h1 className="text-2xl font-bold text-white tracking-wider">Risala</h1>
           <div className="flex items-center space-x-4">
@@ -75,13 +72,12 @@ export default function Layout() {
           </div>
         </header>
         
-        {/* Рабочая прокручиваемая область. Снизу добавлен безопасный отступ для нижней панели мобилок */}
         <div className="flex-1 overflow-hidden bg-[#1a202c] pb-[72px] md:pb-0 relative">
           <Outlet />
         </div>
       </main>
 
-      {/* Нижняя мобильная панель навигации (Отображается только на телефонах) */}
+      {/* Нижняя мобильная панель навигации */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-[#2d3748] border-t border-[#4a5568] flex justify-around items-center h-[72px] px-2 z-50 shadow-2xl pb-safe">
         {navItems.map((item) => (
           <NavLink
