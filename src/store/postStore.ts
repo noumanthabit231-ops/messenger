@@ -27,81 +27,33 @@ export const usePostStore = create<PostState>((set, get) => ({
 
   fetchPosts: async () => {
     set({ isLoading: true });
-    const { data: postsData, error } = await supabase
-      .from('posts')
-      .select('*')
-      .order('created_at', { ascending: false });
-
-    if (error) {
-      console.error('Ошибка загрузки постов:', error);
-      set({ isLoading: false });
-      return;
-    }
-
-    const formattedPosts = await Promise.all(
-      postsData.map(async (post) => {
-        const { data: likes } = await supabase
-          .from('post_likes')
-          .select('user_id')
-          .eq('post_id', post.id);
-        const { data: comments } = await supabase
-          .from('post_comments')
-          .select('*')
-          .eq('post_id', post.id);
-        return {
-          ...post,
-          likes: likes ? likes.map((l) => l.user_id) : [],
-          comments: comments || [],
-        };
-      })
-    );
-
+    const { data: postsData, error } = await supabase.from('posts').select('*').order('created_at', { ascending: false });
+    if (error) { set({ isLoading: false }); return; }
+    const formattedPosts = await Promise.all(postsData.map(async (post) => {
+      const { data: likes } = await supabase.from('post_likes').select('user_id').eq('post_id', post.id);
+      const { data: comments } = await supabase.from('post_comments').select('*').eq('post_id', post.id);
+      return { ...post, likes: likes ? likes.map(l => l.user_id) : [], comments: comments || [] };
+    }));
     set({ posts: formattedPosts, isLoading: false });
   },
 
   addPost: async (userId, content, imageUrl) => {
-    const { error } = await supabase
-      .from('posts')
-      .insert([{ user_id: userId, content, image_url: imageUrl }]);
-    if (error) console.error(error);
-    else get().fetchPosts();
+    await supabase.from('posts').insert([{ user_id: userId, content, image_url: imageUrl }]);
+    get().fetchPosts();
   },
 
   deletePost: async (postId) => {
-    const { error } = await supabase.from('posts').delete().eq('id', postId);
-    if (error) console.error(error);
-    else set((state) => ({ posts: state.posts.filter((p) => p.id !== postId) }));
+    await supabase.from('posts').delete().eq('id', postId);
+    set(state => ({ posts: state.posts.filter(p => p.id !== postId) }));
   },
 
   likePost: async (postId, userId) => {
-    const { error } = await supabase
-      .from('post_likes')
-      .insert({ post_id: postId, user_id: userId });
-    if (!error) {
-      set((state) => ({
-        posts: state.posts.map((post) =>
-          post.id === postId
-            ? { ...post, likes: [...post.likes, userId] }
-            : post
-        ),
-      }));
-    }
+    await supabase.from('post_likes').insert({ post_id: postId, user_id: userId });
+    set(state => ({ posts: state.posts.map(post => post.id === postId ? { ...post, likes: [...post.likes, userId] } : post) }));
   },
 
   unlikePost: async (postId, userId) => {
-    const { error } = await supabase
-      .from('post_likes')
-      .delete()
-      .eq('post_id', postId)
-      .eq('user_id', userId);
-    if (!error) {
-      set((state) => ({
-        posts: state.posts.map((post) =>
-          post.id === postId
-            ? { ...post, likes: post.likes.filter((id) => id !== userId) }
-            : post
-        ),
-      }));
-    }
+    await supabase.from('post_likes').delete().eq('post_id', postId).eq('user_id', userId);
+    set(state => ({ posts: state.posts.map(post => post.id === postId ? { ...post, likes: post.likes.filter(id => id !== userId) } : post) }));
   },
 }));
