@@ -51,38 +51,72 @@ export default function MessagesPage() {
     if (refreshBadges) await refreshBadges(user.id);
   }, [user, messages, updateMessageStatus, refreshBadges]);
 
+  // Основной эффект для realtime
   useEffect(() => {
     if (!activeChat || !user) return;
+
+    // Сохраняем ID текущего чата в ref для защиты от гонок
     activeChatIdRef.current = activeChat.id;
+    
+    // Загружаем сообщения
     loadMessages(user.id, activeChat.id);
+    // Отмечаем как прочитанные
     markMessagesAsRead(activeChat.id);
-    if (messagesChannelRef.current) supabase.removeChannel(messagesChannelRef.current);
-    if (typingChannelRef.current) supabase.removeChannel(typingChannelRef.current);
+
+    // Удаляем старые каналы
+    if (messagesChannelRef.current) {
+      supabase.removeChannel(messagesChannelRef.current);
+      messagesChannelRef.current = null;
+    }
+    if (typingChannelRef.current) {
+      supabase.removeChannel(typingChannelRef.current);
+      typingChannelRef.current = null;
+    }
+
+    // Создаём новый канал для сообщений
     messagesChannelRef.current = supabase
       .channel(`messages:${user.id}:${activeChat.id}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `receiver_id=eq.${user.id}` }, (payload) => {
+        // Проверяем, что это сообщение от текущего активного чата
         if (payload.new.sender_id === activeChatIdRef.current) {
           addMessage({ ...payload.new, status: 'sent' });
           markMessagesAsRead(activeChatIdRef.current);
         } else {
-          // Уведомление о новом сообщении от другого чата
-          toast.success(`Новое сообщение от ${activeChat?.full_name || activeChat?.username}`);
+          // Сообщение от другого чата – показываем уведомление, но не добавляем в текущий список
+          const otherUser = realUsers.find(u => u.id === payload.new.sender_id);
+          toast.success(`📨 Новое сообщение от ${otherUser?.full_name || otherUser?.username || 'пользователя'}`);
         }
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages', filter: `receiver_id=eq.${user.id}` }, (payload) => {
-        if (payload.new.is_read && payload.new.sender_id === activeChatIdRef.current) updateMessageStatus(payload.new.id, true);
+        if (payload.new.is_read && payload.new.sender_id === activeChatIdRef.current) {
+          updateMessageStatus(payload.new.id, true);
+        }
       })
       .subscribe();
+
+    // Канал для статуса "печатает"
     typingChannelRef.current = supabase.channel(`typing:${user.id}:${activeChat.id}`);
-    typingChannelRef.current.on('broadcast', { event: 'typing' }, ({ payload }) => {
-      if (payload.senderId === activeChatIdRef.current) setTypingStatus(prev => ({ ...prev, [activeChatIdRef.current!]: payload.isTyping }));
-    }).subscribe();
+    typingChannelRef.current
+      .on('broadcast', { event: 'typing' }, ({ payload }) => {
+        if (payload.senderId === activeChatIdRef.current) {
+          setTypingStatus(prev => ({ ...prev, [activeChatIdRef.current!]: payload.isTyping }));
+        }
+      })
+      .subscribe();
+
+    // Очистка при размонтировании или смене чата
     return () => {
-      if (messagesChannelRef.current) supabase.removeChannel(messagesChannelRef.current);
-      if (typingChannelRef.current) supabase.removeChannel(typingChannelRef.current);
+      if (messagesChannelRef.current) {
+        supabase.removeChannel(messagesChannelRef.current);
+        messagesChannelRef.current = null;
+      }
+      if (typingChannelRef.current) {
+        supabase.removeChannel(typingChannelRef.current);
+        typingChannelRef.current = null;
+      }
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     };
-  }, [activeChat, user, loadMessages, addMessage, updateMessageStatus, markMessagesAsRead]);
+  }, [activeChat, user, loadMessages, addMessage, updateMessageStatus, markMessagesAsRead, realUsers]);
 
   const emitTyping = useCallback((isTyping: boolean) => {
     if (!activeChat || !user || !typingChannelRef.current) return;
