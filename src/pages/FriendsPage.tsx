@@ -13,36 +13,23 @@ export default function FriendsPage() {
   const [friends, setFriends] = useState<any[]>([]);
   const [requests, setRequests] = useState<any[]>([]);
 
-  // Берем несколько реальных людей из базы для демонстрации списка друзей
   useEffect(() => {
     const fetchUsers = async () => {
       if (!user?.id) return;
-      const { data } = await supabase.from('users').select('*').neq('id', user.id).limit(6);
+      // Здесь ИСПРАВЛЕНО на profiles
+      const { data } = await supabase.from('profiles').select('*').neq('id', user.id).limit(6);
       if (data) {
-        setFriends(data.slice(0, 3)); // Первые 3 как друзья
-        setRequests(data.slice(3, 6)); // Остальные как заявки
+        setFriends(data.slice(0, 3)); 
+        setRequests(data.slice(3, 6)); 
       }
     };
     fetchUsers();
   }, [user]);
 
-  const removeFriend = (id: string) => {
-    setFriends(friends.filter(f => f.id !== id));
-  };
-
-  const acceptRequest = (u: any) => {
-    setRequests(requests.filter(r => r.id !== u.id));
-    setFriends([...friends, u]);
-  };
-
-  const rejectRequest = (id: string) => {
-    setRequests(requests.filter(r => r.id !== id));
-  };
-
-  const startChat = (u: any) => {
-    setActiveChat(u);
-    navigate('/messages');
-  };
+  const removeFriend = (id: string) => setFriends(friends.filter(f => f.id !== id));
+  const acceptRequest = (u: any) => { setRequests(requests.filter(r => r.id !== u.id)); setFriends([...friends, u]); };
+  const rejectRequest = (id: string) => setRequests(requests.filter(r => r.id !== id));
+  const startChat = (u: any) => { setActiveChat(u); navigate('/messages'); };
 
   return (
     <div className="p-4 md:p-6 max-w-5xl mx-auto h-full overflow-y-auto no-scrollbar pb-20 md:pb-6">
@@ -65,12 +52,8 @@ export default function FriendsPage() {
                   </div>
                 </div>
                 <div className="flex space-x-2 shrink-0">
-                  <button onClick={() => acceptRequest(u)} className="p-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition-colors">
-                    <Check size={20} />
-                  </button>
-                  <button onClick={() => rejectRequest(u.id)} className="p-2 bg-[#1a202c] border border-[#4a5568] hover:bg-red-500/20 hover:text-red-500 text-gray-400 rounded-xl transition-colors">
-                    <X size={20} />
-                  </button>
+                  <button onClick={() => acceptRequest(u)} className="p-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl transition-colors"><Check size={20} /></button>
+                  <button onClick={() => rejectRequest(u.id)} className="p-2 bg-[#1a202c] border border-[#4a5568] hover:bg-red-500/20 hover:text-red-500 text-gray-400 rounded-xl transition-colors"><X size={20} /></button>
                 </div>
               </div>
             ))}
@@ -94,20 +77,11 @@ export default function FriendsPage() {
                 </div>
               </div>
               <div className="flex space-x-2 shrink-0">
-                <button onClick={() => startChat(u)} className="p-2.5 bg-[#1a202c] border border-[#4a5568] hover:bg-blue-600 hover:border-blue-600 text-gray-300 hover:text-white rounded-xl transition-colors" title="Написать">
-                  <MessageSquare size={20} />
-                </button>
-                <button onClick={() => removeFriend(u.id)} className="p-2.5 bg-[#1a202c] border border-[#4a5568] hover:bg-red-600 hover:border-red-600 text-gray-300 hover:text-white rounded-xl transition-colors" title="Удалить">
-                  <UserMinus size={20} />
-                </button>
+                <button onClick={() => startChat(u)} className="p-2.5 bg-[#1a202c] border border-[#4a5568] hover:bg-blue-600 hover:border-blue-600 text-gray-300 hover:text-white rounded-xl transition-colors"><MessageSquare size={20} /></button>
+                <button onClick={() => removeFriend(u.id)} className="p-2.5 bg-[#1a202c] border border-[#4a5568] hover:bg-red-600 hover:border-red-600 text-gray-300 hover:text-white rounded-xl transition-colors"><UserMinus size={20} /></button>
               </div>
             </div>
           ))}
-          {friends.length === 0 && (
-             <div className="text-center py-12 text-gray-500 bg-[#2d3748] rounded-2xl border border-[#4a5568]">
-               <p>У вас пока нет добавленных друзей</p>
-             </div>
-          )}
         </div>
       </div>
     </div>
