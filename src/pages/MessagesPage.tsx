@@ -1,25 +1,30 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useChatStore } from '../store/chatStore';
 import { useAuthStore } from '../store/authStore';
+import { useBadgeStore } from '../store/badgeStore';
 import { supabase } from '../lib/supabase';
-import { Send, Mic, Paperclip, Phone, Video, MoreVertical, Play, Square, MessageSquare, ChevronLeft } from 'lucide-react';
+import { Send, Mic, Paperclip, Phone, Video, MoreVertical, Play, Square, MessageSquare, ChevronLeft, Check, CheckCheck, Clock } from 'lucide-react';
 import { format } from 'date-fns';
 import clsx from 'clsx';
+import debounce from 'lodash/debounce';
 
 export default function MessagesPage() {
   const { user } = useAuthStore();
-  const { messages, activeChat, setActiveChat, sendMessage, loadMessages, addMessage } = useChatStore();
+  const { messages, activeChat, setActiveChat, sendMessage, loadMessages, addMessage, updateMessageStatus } = useChatStore();
+  const { refreshBadges } = useBadgeStore();
   
   const [inputText, setInputText] = useState('');
   const [realUsers, setRealUsers] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [typingStatus, setTypingStatus] = useState<{ [userId: string]: { typing: boolean; voice?: boolean } }>({});
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const recordingInterval = useRef<NodeJS.Timeout | null>(null);
+  const typingChannel = useRef<any>(null);
 
-  // Получение пользователей из базы
+  // Загрузка пользователей
   useEffect(() => {
     const fetchUsers = async () => {
       if (!user?.id) return;
@@ -29,41 +34,113 @@ export default function MessagesPage() {
     fetchUsers();
   }, [user]);
 
-  // Загрузка сообщений и подписка на новые
+  // Отметить сообщения как прочитанные и обновить бейджи
+  const markMessagesAsRead = useCallback(async (senderId: string) => {
+    if (!user?.id) return;
+    const { error } = await supabase
+      .from('messages')
+      .update({ is_read: true })
+      .eq('receiver_id', user.id)
+      .eq('sender_id', senderId)
+      .eq('is_read', false);
+    if (!error) {
+      // Обновить локальные сообщения
+      messages.forEach(msg => {
+        if (msg.sender_id === senderId && !msg.is_read) {
+          updateMessageStatus(msg.id, true);
+        }
+      });
+      if (refreshBadges) await refreshBadges(user.id);
+    }
+  }, [user, messages, updateMessageStatus, refreshBadges]);
+
+  // Загрузка сообщений и подписка на realtime
   useEffect(() => {
     if (!activeChat || !user) return;
 
     loadMessages(user.id, activeChat.id);
+    markMessagesAsRead(activeChat.id);
 
-    const channel = supabase
-      .channel('chat_messages')
-      .on('postgres_changes', { 
-        event: 'INSERT', 
-        schema: 'public', 
-        table: 'messages',
-        filter: `receiver_id=eq.${user.id}` // Слушаем только то, что прислали НАМ
-      }, (payload) => {
-        // Если сообщение от текущего активного собеседника
+    // Подписка на новые сообщения
+    const messagesChannel = supabase
+      .channel('messages_realtime')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `receiver_id=eq.${user.id}` }, (payload) => {
         if (payload.new.sender_id === activeChat.id) {
-          addMessage(payload.new as any);
+          addMessage({ ...payload.new, status: 'sent' });
+          markMessagesAsRead(activeChat.id);
+        }
+      })
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages', filter: `receiver_id=eq.${user.id}` }, (payload) => {
+        if (payload.new.is_read && payload.new.sender_id === activeChat.id) {
+          updateMessageStatus(payload.new.id, true);
+        }
+      })
+      .subscribe();
+
+    // Канал для статуса "печатает"
+    if (typingChannel.current) supabase.removeChannel(typingChannel.current);
+    typingChannel.current = supabase.channel(`typing:${user.id}:${activeChat.id}`, {
+      config: { presence: { key: user.id } }
+    });
+    typingChannel.current
+      .on('broadcast', { event: 'typing' }, ({ payload }) => {
+        if (payload.senderId === activeChat.id) {
+          setTypingStatus(prev => ({ ...prev, [activeChat.id]: { typing: payload.isTyping } }));
+        }
+      })
+      .on('broadcast', { event: 'voice_typing' }, ({ payload }) => {
+        if (payload.senderId === activeChat.id) {
+          setTypingStatus(prev => ({ ...prev, [activeChat.id]: { ...prev[activeChat.id], voice: payload.isRecording } }));
         }
       })
       .subscribe();
 
     return () => {
-      supabase.removeChannel(channel);
+      supabase.removeChannel(messagesChannel);
+      if (typingChannel.current) supabase.removeChannel(typingChannel.current);
     };
-  }, [activeChat, user, loadMessages, addMessage]);
+  }, [activeChat, user, loadMessages, addMessage, updateMessageStatus, markMessagesAsRead]);
+
+  // Отправка статуса "печатает"
+  const emitTyping = useCallback(
+    debounce((isTyping: boolean) => {
+      if (!activeChat || !user) return;
+      typingChannel.current?.send({
+        type: 'broadcast',
+        event: 'typing',
+        payload: { senderId: user.id, isTyping }
+      });
+    }, 300),
+    [activeChat, user]
+  );
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setInputText(e.target.value);
+    emitTyping(true);
+    emitTyping.flush?.();
+    setTimeout(() => emitTyping(false), 1500);
+  };
+
+  // Голосовые уведомления о записи
+  useEffect(() => {
+    if (!activeChat || !user) return;
+    typingChannel.current?.send({
+      type: 'broadcast',
+      event: 'voice_typing',
+      payload: { senderId: user.id, isRecording }
+    });
+  }, [isRecording, activeChat, user]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const handleSend = (e?: React.FormEvent) => {
+  const handleSend = async (e?: React.FormEvent) => {
     e?.preventDefault();
     if (inputText.trim() && user && activeChat) {
-      sendMessage(user.id, activeChat.id, inputText.trim(), 'text');
+      await sendMessage(user.id, activeChat.id, inputText.trim(), 'text');
       setInputText('');
+      emitTyping(false);
     }
   };
 
@@ -94,8 +171,11 @@ export default function MessagesPage() {
     return name.includes(searchQuery.toLowerCase()) || nick.includes(searchQuery.toLowerCase());
   });
 
+  const activeTyping = activeChat ? typingStatus[activeChat.id] : null;
+
   return (
     <div className="flex h-full bg-[#1a202c]">
+      {/* Список чатов (левая панель) */}
       <div className={clsx("w-full md:w-80 border-r border-[#4a5568] flex flex-col bg-[#2d3748] h-full shrink-0", activeChat ? "hidden md:flex" : "flex")}>
         <div className="p-4 border-b border-[#4a5568]">
           <input
@@ -125,6 +205,7 @@ export default function MessagesPage() {
         </div>
       </div>
 
+      {/* Область чата */}
       <div className={clsx("flex-1 flex-col h-full bg-[#1a202c]", activeChat ? "flex" : "hidden md:flex")}>
         {activeChat ? (
           <>
@@ -134,7 +215,9 @@ export default function MessagesPage() {
                 <img src={activeChat.avatar_url || `https://api.dicebear.com/7.x/bottts/svg?seed=${activeChat.username}`} alt="" className="w-10 h-10 rounded-full object-cover shrink-0" />
                 <div className="min-w-0">
                   <h2 className="text-gray-100 font-medium truncate">{activeChat.full_name || activeChat.username}</h2>
-                  <p className={clsx("text-xs font-medium", activeChat.is_online ? "text-green-400" : "text-gray-400")}>{activeChat.is_online ? 'В сети' : 'Не в сети'}</p>
+                  <p className={clsx("text-xs font-medium", activeChat.is_online ? "text-green-400" : "text-gray-400")}>
+                    {activeTyping?.typing ? 'Печатает...' : activeTyping?.voice ? 'Записывает голосовое...' : (activeChat.is_online ? 'В сети' : 'Не в сети')}
+                  </p>
                 </div>
               </div>
             </div>
@@ -153,7 +236,16 @@ export default function MessagesPage() {
                         </div>
                       )}
                     </div>
-                    <span className="text-[10px] text-gray-500 mt-1 px-1">{msg.created_at ? format(new Date(msg.created_at), 'HH:mm') : ''}</span>
+                    <div className="flex items-center space-x-1 mt-1 px-1">
+                      <span className="text-[10px] text-gray-500">{format(new Date(msg.created_at), 'HH:mm')}</span>
+                      {isMine && (
+                        <>
+                          {msg.status === 'sending' && <Clock size={10} className="text-gray-400" />}
+                          {msg.status === 'sent' && <Check size={12} className="text-gray-400" />}
+                          {msg.status === 'read' && <CheckCheck size={12} className="text-blue-400" />}
+                        </>
+                      )}
+                    </div>
                   </div>
                 );
               })}
@@ -167,7 +259,7 @@ export default function MessagesPage() {
                   {isRecording ? (
                     <div className="flex items-center space-x-3 px-4 py-3"><div className="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse"></div><span className="text-red-500">{formatTime(recordingTime)}</span></div>
                   ) : (
-                    <textarea value={inputText} onChange={(e) => setInputText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} placeholder="Напишите сообщение..." className="w-full bg-transparent border-none focus:ring-0 text-white px-4 py-3 max-h-32 resize-none outline-none" rows={1} />
+                    <textarea value={inputText} onChange={handleInputChange} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} placeholder="Напишите сообщение..." className="w-full bg-transparent border-none focus:ring-0 text-white px-4 py-3 max-h-32 resize-none outline-none" rows={1} />
                   )}
                 </div>
                 {inputText.trim() ? (
