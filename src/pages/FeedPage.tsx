@@ -9,14 +9,13 @@ import clsx from 'clsx';
 
 export default function FeedPage() {
   const { user } = useAuthStore();
-  const { posts, fetchPosts, addPost, deletePost } = usePostStore();
+  const { posts, fetchPosts, addPost, deletePost, likePost, unlikePost } = usePostStore();
   const [newPostContent, setNewPostContent] = useState('');
   const [realUsers, setRealUsers] = useState<any[]>([]);
 
-  // Загружаем профили и посты при открытии страницы
   useEffect(() => {
     const fetchUsersAndPosts = async () => {
-      const { data } = await supabase.from('profiles').select('*'); // Ищем в profiles!
+      const { data } = await supabase.from('profiles').select('*');
       if (data) setRealUsers(data);
       await fetchPosts();
     };
@@ -31,12 +30,19 @@ export default function FeedPage() {
   const handleCreatePost = (e: React.FormEvent) => {
     e.preventDefault();
     if (newPostContent.trim() && user) {
-      // Имитация случайной картинки для демо (потом можно прикрутить Supabase Storage)
       const hasImage = Math.random() > 0.8;
       const imageUrl = hasImage ? `https://images.unsplash.com/photo-${Math.floor(Math.random()*1000000)}?w=800&q=80` : undefined;
-      
       addPost(user.id, newPostContent.trim(), imageUrl);
       setNewPostContent('');
+    }
+  };
+
+  const handleLike = async (postId: string, isLiked: boolean) => {
+    if (!user) return;
+    if (isLiked) {
+      await unlikePost(postId, user.id);
+    } else {
+      await likePost(postId, user.id);
     }
   };
 
@@ -75,17 +81,13 @@ export default function FeedPage() {
         {posts.map((post) => {
           const author = getUser(post.user_id);
           const isLiked = post.likes?.includes(user?.id || '');
-          const isMyPost = post.user_id === user?.id; // Проверяем, мой ли это пост
+          const isMyPost = post.user_id === user?.id;
 
           return (
             <div key={post.id} className="bg-[#2d3748] border border-[#4a5568] rounded-2xl p-4 md:p-6 shadow-sm relative">
-              
-              {/* Кнопка удаления (показывается только автору) */}
               {isMyPost && (
                 <button 
-                  onClick={() => {
-                    if (window.confirm('Точно удалить этот пост?')) deletePost(post.id);
-                  }}
+                  onClick={() => { if (window.confirm('Точно удалить этот пост?')) deletePost(post.id); }}
                   className="absolute top-4 right-4 p-2 text-gray-500 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-colors"
                   title="Удалить пост"
                 >
@@ -112,7 +114,7 @@ export default function FeedPage() {
               )}
 
               <div className="flex items-center space-x-6 border-t border-[#4a5568] pt-4">
-                <button className={clsx("flex items-center space-x-2 transition-colors", isLiked ? "text-red-500" : "text-gray-400 hover:text-red-500")}>
+                <button onClick={() => handleLike(post.id, isLiked)} className={clsx("flex items-center space-x-2 transition-colors", isLiked ? "text-red-500" : "text-gray-400 hover:text-red-500")}>
                   <Heart size={20} className={clsx(isLiked && "fill-current")} />
                   <span>{post.likes?.length || 0}</span>
                 </button>
@@ -126,9 +128,7 @@ export default function FeedPage() {
         })}
 
         {posts.length === 0 && (
-          <div className="text-center py-12 text-gray-500">
-            Здесь пока нет постов. Напишите что-нибудь!
-          </div>
+          <div className="text-center py-12 text-gray-500">Здесь пока нет постов. Напишите что-нибудь!</div>
         )}
       </div>
     </div>
