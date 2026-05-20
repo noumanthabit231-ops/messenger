@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { supabase } from '../lib/supabase';
+import toast from 'react-hot-toast';
 
 let audio: HTMLAudioElement | null = null;
 const playNotificationSound = () => {
@@ -9,8 +10,7 @@ const playNotificationSound = () => {
       audio.volume = 0.5;
       audio.load();
     }
-    const playPromise = audio.play();
-    if (playPromise !== undefined) playPromise.catch(() => {});
+    audio.play().catch(() => {});
   } catch (e) {}
 };
 
@@ -29,38 +29,30 @@ export const useBadgeStore = create<BadgeState>((set) => ({
   pendingRequests: 0,
 
   refreshBadges: async (userId: string) => {
-    const { count: msgCount } = await supabase
-      .from('messages')
-      .select('*', { count: 'exact', head: true })
-      .eq('receiver_id', userId)
-      .eq('is_read', false);
-    const { count: reqCount } = await supabase
-      .from('friends')
-      .select('*', { count: 'exact', head: true })
-      .eq('friend_id', userId)
-      .eq('status', 'pending');
+    const { count: msgCount } = await supabase.from('messages').select('*', { count: 'exact', head: true }).eq('receiver_id', userId).eq('is_read', false);
+    const { count: reqCount } = await supabase.from('friends').select('*', { count: 'exact', head: true }).eq('friend_id', userId).eq('status', 'pending');
     set({ unreadMessages: msgCount || 0, pendingRequests: reqCount || 0 });
   },
 
   initBadges: async (userId: string) => {
     const { refreshBadges } = useBadgeStore.getState();
     await refreshBadges(userId);
-
     if (activeChannel) supabase.removeChannel(activeChannel);
-
     activeChannel = supabase.channel('global_badges')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'messages', filter: `receiver_id=eq.${userId}` }, (payload) => {
-        refreshBadges(userId);
-        if (payload.eventType === 'INSERT') playNotificationSound();
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `receiver_id=eq.${userId}` }, async (payload) => {
+        await refreshBadges(userId);
+        playNotificationSound();
+        const { data: sender } = await supabase.from('profiles').select('full_name, username').eq('id', payload.new.sender_id).single();
+        toast.success(`📨 ${sender?.full_name || sender?.username}: ${payload.new.content.substring(0, 50)}`);
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'friends', filter: `friend_id=eq.${userId}` }, () => {
-        refreshBadges(userId);
-        if (payload.eventType === 'INSERT') playNotificationSound();
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'friends', filter: `friend_id=eq.${userId}` }, async (payload) => {
+        await refreshBadges(userId);
+        playNotificationSound();
+        const { data: requester } = await supabase.from('profiles').select('full_name, username').eq('id', payload.new.user_id).single();
+        toast.info(`👥 Заявка в друзья от ${requester?.full_name || requester?.username}`);
       })
       .subscribe();
   },
 
-  cleanup: () => {
-    if (activeChannel) supabase.removeChannel(activeChannel);
-  },
+  cleanup: () => { if (activeChannel) supabase.removeChannel(activeChannel); },
 }));
