@@ -181,4 +181,48 @@ export default function MessagesPage() {
                   ) : (
                     <textarea
                       value={inputText}
-                      onChange={(
+                      onChange={(e) => setInputText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          handleSend();
+                        }
+                      }}
+                      placeholder="Напишите сообщение..."
+                      className="w-full bg-transparent border-none focus:ring-0 text-gray-100 px-4 py-3 max-h-32 resize-none outline-none"
+                      rows={1}
+                    />
+                  )}
+                </div>
+
+                {inputText.trim() ? (
+                  <button type="submit" className="p-3 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors shadow-md">
+                    <Send size={22} />
+                  </button>
+                ) : (
+                  <button 
+                    type="button" 
+                    onClick={toggleRecording}
+                    className={clsx(
+                      "p-3 rounded-xl transition-colors text-white shadow-sm",
+                      isRecording ? "bg-red-500 hover:bg-red-600 shadow-md" : "bg-[#1a202c] border border-[#4a5568] hover:bg-[#4a5568] text-gray-400"
+                    )}
+                  >
+                    {isRecording ? <Square size={22} /> : <Mic size={22} />}
+                  </button>
+                )}
+              </form>
+            </div>
+          </>
+        ) : (
+          <div className="flex-1 flex items-center justify-center flex-col text-gray-500 bg-[#1a202c]">
+            <div className="w-20 h-20 bg-[#2d3748] rounded-full flex items-center justify-center mb-4 shadow-md">
+              <MessageSquare size={32} />
+            </div>
+            <p className="text-gray-400">Выберите чат для начала общения</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
