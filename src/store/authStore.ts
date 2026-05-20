@@ -1,13 +1,14 @@
 import { create } from 'zustand';
-import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import { supabase } from '../lib/supabase';
 
-export type User = {
+export interface User {
   id: string;
   username: string;
   full_name: string | null;
   avatar_url: string | null;
   is_online: boolean;
-};
+  created_at?: string;
+}
 
 interface AuthState {
   user: User | null;
@@ -15,66 +16,85 @@ interface AuthState {
   isLoading: boolean;
   login: (username: string) => Promise<void>;
   logout: () => Promise<void>;
-  checkAuth: () => Promise<void>;
+  checkAuth: () => void;
 }
-
-// Mock User for Demo
-const MOCK_USER: User = {
-  id: '123e4567-e89b-12d3-a456-426614174000',
-  username: 'demo_user',
-  full_name: 'Demo User',
-  avatar_url: 'https://i.pravatar.cc/150?u=demo',
-  is_online: true,
-};
 
 export const useAuthStore = create<AuthState>((set) => ({
   user: null,
   isAuthenticated: false,
-  isLoading: true,
+  isLoading: false,
 
-  login: async (username) => {
+  checkAuth: () => {
+    const storedUser = localStorage.getItem('risala_user');
+    if (storedUser) {
+      set({ user: JSON.parse(storedUser), isAuthenticated: true });
+    }
+  },
+
+  login: async (username: string) => {
     set({ isLoading: true });
+    const cleanUsername = username.trim().toLowerCase();
+
     try {
-      if (isSupabaseConfigured) {
-        // Mocking real login for simplicity in this demo, normally you'd use email/password or OAuth
-        const { data, error } = await supabase.from('profiles').select('*').eq('username', username).single();
-        if (error) throw error;
-        set({ user: data, isAuthenticated: true });
-      } else {
-        // Mock Login
-        setTimeout(() => {
-          set({ 
-            user: { ...MOCK_USER, username, full_name: username, avatar_url: `https://i.pravatar.cc/150?u=${username}` }, 
-            isAuthenticated: true, 
-            isLoading: false 
-          });
-        }, 500);
+      // 1. Пытаемся найти пользователя в базе данных по username
+      const { data: existingUser, error: searchError } = await supabase
+        .from('users')
+        .select('*')
+        .eq('username', cleanUsername)
+        .maybeSingle();
+
+      if (searchError) throw searchError;
+
+      if (existingUser) {
+        // Если пользователь найден, обновляем его статус на "онлайн"
+        await supabase
+          .from('users')
+          .update({ is_online: true })
+          .eq('id', existingUser.id);
+
+        const updatedUser = { ...existingUser, is_online: true };
+        localStorage.setItem('risala_user', JSON.stringify(updatedUser));
+        set({ user: updatedUser, isAuthenticated: true, isLoading: false });
+        return;
       }
+
+      // 2. Если пользователя нет в таблице, регистрируем его (создаем запись)
+      const { data: newUser, error: insertError } = await supabase
+        .from('users')
+        .insert([
+          {
+            username: cleanUsername,
+            full_name: username.trim(), // Используем оригинальное написание для отображаемого имени
+            avatar_url: `https://api.dicebear.com/7.x/bottts/svg?seed=${cleanUsername}`,
+            is_online: true,
+          },
+        ])
+        .select()
+        .single();
+
+      if (insertError) throw insertError;
+
+      localStorage.setItem('risala_user', JSON.stringify(newUser));
+      set({ user: newUser, isAuthenticated: true, isLoading: false });
     } catch (error) {
-      console.error('Login failed', error);
+      console.error('Ошибка в процессе аутентификации:', error);
+      alert('Не удалось выполнить вход. Проверьте подключение к Supabase или структуру таблицы.');
       set({ isLoading: false });
     }
   },
 
   logout: async () => {
-    if (isSupabaseConfigured) {
-      await supabase.auth.signOut();
+    const storedUser = localStorage.getItem('risala_user');
+    if (storedUser) {
+      const parsed = JSON.parse(storedUser);
+      // При выходе ставим статус оффлайн в базе
+      await supabase
+        .from('users')
+        .update({ is_online: false })
+        .eq('id', parsed.id)
+        .catch((err) => console.error(err));
     }
+    localStorage.removeItem('risala_user');
     set({ user: null, isAuthenticated: false });
   },
-
-  checkAuth: async () => {
-    if (isSupabaseConfigured) {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user) {
-        const { data } = await supabase.from('profiles').select('*').eq('id', session.user.id).single();
-        set({ user: data, isAuthenticated: true, isLoading: false });
-      } else {
-        set({ user: null, isAuthenticated: false, isLoading: false });
-      }
-    } else {
-      // For mock, auto-login or stay logged out. Let's start logged out.
-      set({ user: null, isAuthenticated: false, isLoading: false });
-    }
-  }
 }));
