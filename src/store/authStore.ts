@@ -19,16 +19,21 @@ interface AuthState {
   checkAuth: () => void;
 }
 
+// Специальная функция для создания безопасного email из любого логина (включая русский язык)
+const generateSafeEmail = (username: string) => {
+  // Конвертируем строку в безопасный латинский формат, убирая все спецсимволы
+  const safeString = btoa(encodeURIComponent(username)).replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+  return `${safeString}@risala.app`;
+};
+
 export const useAuthStore = create<AuthState>((set) => ({
   user: null,
   isAuthenticated: false,
   isLoading: false,
 
   checkAuth: async () => {
-    // Проверяем сессию через официальный метод Supabase
     const { data: { session } } = await supabase.auth.getSession();
     if (session?.user) {
-      // Загружаем профиль из твоей таблицы
       const { data: profile } = await supabase
         .from('profiles')
         .select('*')
@@ -45,25 +50,22 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({ isLoading: true });
     const cleanUsername = username.trim().toLowerCase();
     
-    // Технические email и пароль для работы встроенного Supabase Auth
-    const dummyEmail = `${cleanUsername}@risala.local`;
-    const dummyPassword = `${cleanUsername}-Risala-2026!`; // Надежный пароль, чтобы база не ругалась
+    // Генерируем email, который точно понравится Supabase
+    const dummyEmail = generateSafeEmail(cleanUsername);
+    const dummyPassword = `${generateSafeEmail(cleanUsername)}-Risala-2026!`;
 
     try {
-      // 1. Пытаемся войти
       let { data: authData, error: authError } = await supabase.auth.signInWithPassword({
         email: dummyEmail,
         password: dummyPassword,
       });
 
-      // 2. Если такого пользователя нет — регистрируем
       if (authError && authError.message.includes('Invalid login credentials')) {
         const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
           email: dummyEmail,
           password: dummyPassword,
           options: {
             data: {
-              // Эти данные поймает твой SQL-триггер "handle_new_user"
               username: cleanUsername,
               full_name: username.trim(),
               avatar_url: `https://api.dicebear.com/7.x/bottts/svg?seed=${cleanUsername}`
@@ -74,13 +76,11 @@ export const useAuthStore = create<AuthState>((set) => ({
         if (signUpError) throw signUpError;
         authData = signUpData;
         
-        // Ждем секунду, чтобы SQL-триггер успел создать запись в public.profiles
         await new Promise(resolve => setTimeout(resolve, 1000));
       } else if (authError) {
         throw authError;
       }
 
-      // 3. Получаем созданный профиль из базы
       if (authData.user) {
         const { data: profile, error: profileError } = await supabase
           .from('profiles')
@@ -90,7 +90,6 @@ export const useAuthStore = create<AuthState>((set) => ({
 
         if (profileError) throw profileError;
 
-        // Обновляем статус онлайна
         await supabase
           .from('profiles')
           .update({ is_online: true })
