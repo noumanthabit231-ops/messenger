@@ -3,11 +3,9 @@ import { useChatStore } from '../store/chatStore';
 import { useAuthStore } from '../store/authStore';
 import { useBadgeStore } from '../store/badgeStore';
 import { supabase } from '../lib/supabase';
-import { Send, Mic, Paperclip, Play, Square, MessageSquare, ChevronLeft, Check, CheckCheck, Clock, Phone, Video } from 'lucide-react';
-import { format, formatDistanceToNow } from 'date-fns';
-import { ru } from 'date-fns/locale';
+import { Send, Mic, Paperclip, Play, Square, MessageSquare, ChevronLeft, Check, CheckCheck, Clock, Pause } from 'lucide-react';
+import { format } from 'date-fns';
 import clsx from 'clsx';
-import CallModal from '../components/CallModal';
 
 export default function MessagesPage() {
   const { user } = useAuthStore();
@@ -18,24 +16,20 @@ export default function MessagesPage() {
   const [realUsers, setRealUsers] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [typingStatus, setTypingStatus] = useState<{ [userId: string]: boolean }>({});
-  const [showCall, setShowCall] = useState(false);
-  const [isVideoCall, setIsVideoCall] = useState(false);
+  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
+  const [audioChunks, setAudioChunks] = useState<Blob[]>([]);
+  const [currentlyPlaying, setCurrentlyPlaying] = useState<string | null>(null);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const recordingInterval = useRef<NodeJS.Timeout | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   
-  // Refs для realtime каналов и активного чата
   const messagesChannelRef = useRef<any>(null);
   const typingChannelRef = useRef<any>(null);
   const activeChatIdRef = useRef<string | null>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  
-  // Ref для медиарекордера
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
-  const streamRef = useRef<MediaStream | null>(null);
 
   // Загрузка пользователей
   useEffect(() => {
@@ -47,7 +41,7 @@ export default function MessagesPage() {
     fetchUsers();
   }, [user]);
 
-  // Отметить сообщения как прочитанные и обновить бейджи
+  // Отметить прочитанные
   const markMessagesAsRead = useCallback(async (senderId: string) => {
     if (!user?.id) return;
     const { error } = await supabase
@@ -66,50 +60,25 @@ export default function MessagesPage() {
     }
   }, [user, messages, updateMessageStatus, refreshBadges]);
 
-  // Получение статуса "последний раз" для отображения в списке чатов
-  const getLastSeen = (profile: any) => {
-    if (!profile) return 'Не в сети';
-    if (profile.is_online && new Date(profile.last_seen).getTime() > Date.now() - 2 * 60 * 1000) return 'В сети';
-    if (profile.last_seen) return `был(а) ${formatDistanceToNow(new Date(profile.last_seen), { addSuffix: true, locale: ru })}`;
-    return 'Не в сети';
-  };
-
-  // Эффект для загрузки сообщений и подписки на realtime при смене чата
+  // Realtime сообщения
   useEffect(() => {
     if (!activeChat || !user) return;
-
     activeChatIdRef.current = activeChat.id;
     loadMessages(user.id, activeChat.id);
     markMessagesAsRead(activeChat.id);
 
-    if (messagesChannelRef.current) {
-      supabase.removeChannel(messagesChannelRef.current);
-      messagesChannelRef.current = null;
-    }
-    if (typingChannelRef.current) {
-      supabase.removeChannel(typingChannelRef.current);
-      typingChannelRef.current = null;
-    }
+    if (messagesChannelRef.current) supabase.removeChannel(messagesChannelRef.current);
+    if (typingChannelRef.current) supabase.removeChannel(typingChannelRef.current);
 
     messagesChannelRef.current = supabase
       .channel(`messages:${user.id}:${activeChat.id}`)
-      .on('postgres_changes', { 
-        event: 'INSERT', 
-        schema: 'public', 
-        table: 'messages',
-        filter: `receiver_id=eq.${user.id}` 
-      }, (payload) => {
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `receiver_id=eq.${user.id}` }, (payload) => {
         if (payload.new.sender_id === activeChatIdRef.current) {
           addMessage({ ...payload.new, status: 'sent' });
           markMessagesAsRead(activeChatIdRef.current);
         }
       })
-      .on('postgres_changes', { 
-        event: 'UPDATE', 
-        schema: 'public', 
-        table: 'messages',
-        filter: `receiver_id=eq.${user.id}` 
-      }, (payload) => {
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages', filter: `receiver_id=eq.${user.id}` }, (payload) => {
         if (payload.new.is_read && payload.new.sender_id === activeChatIdRef.current) {
           updateMessageStatus(payload.new.id, true);
         }
@@ -126,26 +95,15 @@ export default function MessagesPage() {
       .subscribe();
 
     return () => {
-      if (messagesChannelRef.current) {
-        supabase.removeChannel(messagesChannelRef.current);
-        messagesChannelRef.current = null;
-      }
-      if (typingChannelRef.current) {
-        supabase.removeChannel(typingChannelRef.current);
-        typingChannelRef.current = null;
-      }
+      if (messagesChannelRef.current) supabase.removeChannel(messagesChannelRef.current);
+      if (typingChannelRef.current) supabase.removeChannel(typingChannelRef.current);
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     };
   }, [activeChat, user, loadMessages, addMessage, updateMessageStatus, markMessagesAsRead]);
 
-  // Отправка статуса "печатает"
   const emitTyping = useCallback((isTyping: boolean) => {
     if (!activeChat || !user || !typingChannelRef.current) return;
-    typingChannelRef.current.send({
-      type: 'broadcast',
-      event: 'typing',
-      payload: { senderId: user.id, isTyping }
-    });
+    typingChannelRef.current.send({ type: 'broadcast', event: 'typing', payload: { senderId: user.id, isTyping } });
   }, [activeChat, user]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -169,46 +127,41 @@ export default function MessagesPage() {
     }
   };
 
-  // === ГОЛОСОВЫЕ СООБЩЕНИЯ ===
+  // --- ГОЛОСОВЫЕ СООБЩЕНИЯ (рабочая запись и загрузка) ---
   const startRecording = async () => {
     if (!user || !activeChat) return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      streamRef.current = stream;
       const recorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = recorder;
-      audioChunksRef.current = [];
+      setMediaRecorder(recorder);
+      setAudioChunks([]);
       
       recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) audioChunksRef.current.push(event.data);
+        if (event.data.size > 0) setAudioChunks(prev => [...prev, event.data]);
       };
       
       recorder.onstop = async () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
         const fileName = `${Date.now()}_${user.id}.webm`;
         
-        // Загружаем в Supabase Storage
-        const { data, error } = await supabase.storage
+        // Загружаем в Storage
+        const { error: uploadError } = await supabase.storage
           .from('voice_messages')
-          .upload(fileName, audioBlob);
+          .upload(fileName, audioBlob, { contentType: 'audio/webm' });
+        
+        if (uploadError) {
+          console.error('Ошибка загрузки:', uploadError);
+          alert('Не удалось отправить голосовое сообщение');
+        } else {
+          // Получаем публичный URL
+          const { data: urlData } = supabase.storage
+            .from('voice_messages')
+            .getPublicUrl(fileName);
           
-        if (error) {
-          console.error('Ошибка загрузки голосового:', error);
-          alert('Не удалось отправить голосовое сообщение. Проверьте настройки Storage.');
-          if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
-          setIsRecording(false);
-          setRecordingTime(0);
-          if (recordingInterval.current) clearInterval(recordingInterval.current);
-          return;
+          await sendMessage(user.id, activeChat.id, 'Голосовое сообщение', 'voice', urlData.publicUrl);
         }
         
-        const { data: { publicUrl } } = supabase.storage
-          .from('voice_messages')
-          .getPublicUrl(fileName);
-          
-        await sendMessage(user.id, activeChat.id, 'Голосовое сообщение', 'voice', publicUrl);
-        
-        if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
+        stream.getTracks().forEach(track => track.stop());
         setIsRecording(false);
         setRecordingTime(0);
         if (recordingInterval.current) clearInterval(recordingInterval.current);
@@ -220,16 +173,16 @@ export default function MessagesPage() {
       recordingInterval.current = setInterval(() => setRecordingTime(prev => prev + 1), 1000);
     } catch (err) {
       console.error('Ошибка доступа к микрофону:', err);
-      alert('Не удалось получить доступ к микрофону. Разрешите доступ в настройках браузера.');
+      alert('Не удалось получить доступ к микрофону');
     }
   };
-  
+
   const stopRecording = () => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
-      mediaRecorderRef.current.stop();
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      mediaRecorder.stop();
     }
   };
-  
+
   const handleVoiceButton = () => {
     if (isRecording) {
       stopRecording();
@@ -237,40 +190,51 @@ export default function MessagesPage() {
       startRecording();
     }
   };
-  
-  // Функция воспроизведения аудио
-  const playAudio = (url: string) => {
-    const audio = new Audio(url);
-    audio.play().catch(e => console.error('Ошибка воспроизведения:', e));
+
+  // --- Аудиоплеер с состоянием ---
+  const playAudio = (url: string, messageId: string) => {
+    if (currentlyPlaying === messageId && audioRef.current && !audioRef.current.paused) {
+      audioRef.current.pause();
+      setCurrentlyPlaying(null);
+    } else {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = url;
+      } else {
+        audioRef.current = new Audio(url);
+        audioRef.current.onended = () => setCurrentlyPlaying(null);
+      }
+      audioRef.current.play().catch(e => console.error('Ошибка воспроизведения:', e));
+      setCurrentlyPlaying(messageId);
+    }
   };
-  
+
   const formatTime = (seconds: number) => {
     const m = Math.floor(seconds / 60);
     const s = seconds % 60;
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
-  const filteredUsers = realUsers.filter((u) => {
-    const name = u.full_name?.toLowerCase() || '';
-    const nick = u.username?.toLowerCase() || '';
-    return name.includes(searchQuery.toLowerCase()) || nick.includes(searchQuery.toLowerCase());
-  });
+  const filteredUsers = realUsers.filter(u => 
+    (u.full_name?.toLowerCase() || '').includes(searchQuery.toLowerCase()) ||
+    (u.username?.toLowerCase() || '').includes(searchQuery.toLowerCase())
+  );
 
   return (
     <div className="flex h-full bg-[#1a202c]">
-      {/* Левая панель: список чатов */}
+      {/* Левая панель */}
       <div className={clsx("w-full md:w-80 border-r border-[#4a5568] flex flex-col bg-[#2d3748] h-full shrink-0", activeChat ? "hidden md:flex" : "flex")}>
         <div className="p-4 border-b border-[#4a5568]">
           <input
             type="text"
             placeholder="Поиск собеседников..."
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={e => setSearchQuery(e.target.value)}
             className="w-full bg-[#1a202c] border border-[#4a5568] rounded-xl px-4 py-2.5 text-gray-200 focus:ring-2 focus:ring-blue-500 outline-none text-sm"
           />
         </div>
         <div className="flex-1 overflow-y-auto no-scrollbar">
-          {filteredUsers.map((realUser) => (
+          {filteredUsers.map(realUser => (
             <div
               key={realUser.id}
               onClick={() => setActiveChat(realUser)}
@@ -278,18 +242,17 @@ export default function MessagesPage() {
             >
               <div className="relative shrink-0">
                 <img src={realUser.avatar_url || `https://api.dicebear.com/7.x/bottts/svg?seed=${realUser.username}`} alt="" className="w-12 h-12 rounded-full object-cover bg-[#1a202c]" />
-                <div className={clsx("absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full border-2 border-[#2d3748]", (realUser.is_online && new Date(realUser.last_seen).getTime() > Date.now() - 2*60*1000) ? "bg-green-500" : "bg-gray-500")}></div>
+                <div className={clsx("absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full border-2 border-[#2d3748]", realUser.is_online ? "bg-green-500" : "bg-gray-500")}></div>
               </div>
               <div className="flex-1 min-w-0">
                 <h3 className="text-gray-100 font-medium truncate">{realUser.full_name || realUser.username}</h3>
-                <p className="text-gray-400 text-xs truncate">{getLastSeen(realUser)}</p>
               </div>
             </div>
           ))}
         </div>
       </div>
 
-      {/* Правая панель: активный чат */}
+      {/* Чат */}
       <div className={clsx("flex-1 flex-col h-full bg-[#1a202c]", activeChat ? "flex" : "hidden md:flex")}>
         {activeChat ? (
           <>
@@ -299,33 +262,31 @@ export default function MessagesPage() {
                 <img src={activeChat.avatar_url || `https://api.dicebear.com/7.x/bottts/svg?seed=${activeChat.username}`} alt="" className="w-10 h-10 rounded-full object-cover shrink-0" />
                 <div className="min-w-0">
                   <h2 className="text-gray-100 font-medium truncate">{activeChat.full_name || activeChat.username}</h2>
-                  <p className="text-xs text-gray-400">
-                    {typingStatus[activeChat.id] ? 'Печатает...' : getLastSeen(activeChat)}
+                  <p className={clsx("text-xs font-medium", activeChat.is_online ? "text-green-400" : "text-gray-400")}>
+                    {typingStatus[activeChat.id] ? 'Печатает...' : (activeChat.is_online ? 'В сети' : 'Не в сети')}
                   </p>
                 </div>
-              </div>
-              <div className="flex items-center space-x-2">
-                <button onClick={() => { setIsVideoCall(false); setShowCall(true); }} className="p-2 text-gray-400 hover:text-white rounded-lg"><Phone size={20} /></button>
-                <button onClick={() => { setIsVideoCall(true); setShowCall(true); }} className="p-2 text-gray-400 hover:text-white rounded-lg"><Video size={20} /></button>
               </div>
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4 no-scrollbar">
-              {messages.map((msg) => {
+              {messages.map(msg => {
                 const isMine = msg.sender_id === user?.id;
                 return (
                   <div key={msg.id} className={clsx("flex flex-col", isMine ? "items-end" : "items-start")}>
                     <div className={clsx("max-w-[85%] md:max-w-[70%] rounded-2xl px-4 py-2.5 shadow-sm break-words", isMine ? "bg-blue-600 text-white rounded-br-none" : "bg-[#2d3748] text-gray-100 rounded-bl-none")}>
                       {msg.message_type === 'text' && <p className="leading-relaxed">{msg.content}</p>}
                       {msg.message_type === 'voice' && (
-                        <div className="flex items-center space-x-3 py-1">
-                          <button 
-                            onClick={() => playAudio(msg.file_url!)} 
-                            className="w-8 h-8 bg-blue-700 rounded-full flex items-center justify-center hover:bg-blue-800"
+                        <div className="flex items-center gap-3">
+                          <button
+                            onClick={() => playAudio(msg.file_url!, msg.id)}
+                            className="w-10 h-10 bg-blue-700 rounded-full flex items-center justify-center hover:bg-blue-800 transition-all active:scale-95"
                           >
-                            <Play size={14} className="ml-0.5 text-white" />
+                            {currentlyPlaying === msg.id ? <Pause size={16} className="text-white" /> : <Play size={16} className="text-white ml-0.5" />}
                           </button>
-                          <div className="h-1 w-28 bg-[#4a5568] rounded-full"><div className="h-full w-full bg-blue-400 rounded-full"></div></div>
+                          <div className="h-1 w-24 bg-[#4a5568] rounded-full overflow-hidden">
+                            <div className="h-full w-1/2 bg-blue-400 rounded-full"></div>
+                          </div>
                         </div>
                       )}
                     </div>
@@ -350,22 +311,30 @@ export default function MessagesPage() {
                 <button type="button" className="p-2.5 text-gray-400 hover:text-white rounded-xl"><Paperclip size={22} /></button>
                 <div className="flex-1 bg-[#1a202c] border border-[#4a5568] rounded-2xl overflow-hidden">
                   {isRecording ? (
-                    <div className="flex items-center space-x-3 px-4 py-3"><div className="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse"></div><span className="text-red-500">{formatTime(recordingTime)}</span></div>
+                    <div className="flex items-center space-x-3 px-4 py-3">
+                      <div className="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse"></div>
+                      <span className="text-red-500 font-mono">{formatTime(recordingTime)}</span>
+                      <button type="button" onClick={stopRecording} className="ml-auto text-red-400 text-xs">Остановить</button>
+                    </div>
                   ) : (
-                    <textarea 
-                      value={inputText} 
-                      onChange={handleInputChange} 
-                      onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} 
-                      placeholder="Напишите сообщение..." 
-                      className="w-full bg-transparent border-none focus:ring-0 text-white px-4 py-3 max-h-32 resize-none outline-none" 
-                      rows={1} 
+                    <textarea
+                      value={inputText}
+                      onChange={handleInputChange}
+                      onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+                      placeholder="Напишите сообщение..."
+                      className="w-full bg-transparent border-none focus:ring-0 text-white px-4 py-3 max-h-32 resize-none outline-none"
+                      rows={1}
                     />
                   )}
                 </div>
                 {inputText.trim() ? (
                   <button type="submit" className="p-3 bg-blue-600 text-white rounded-xl"><Send size={20} /></button>
                 ) : (
-                  <button type="button" onClick={handleVoiceButton} className={clsx("p-3 rounded-xl", isRecording ? "bg-red-500 text-white" : "bg-[#1a202c] border border-[#4a5568] text-gray-400")}>
+                  <button
+                    type="button"
+                    onClick={handleVoiceButton}
+                    className={clsx("p-3 rounded-xl transition-all", isRecording ? "bg-red-500 text-white animate-pulse" : "bg-[#1a202c] border border-[#4a5568] text-gray-400 hover:text-white")}
+                  >
                     {isRecording ? <Square size={20} /> : <Mic size={20} />}
                   </button>
                 )}
@@ -379,17 +348,6 @@ export default function MessagesPage() {
           </div>
         )}
       </div>
-      
-      {showCall && activeChat && user && (
-        <CallModal
-          isOpen={showCall}
-          onClose={() => setShowCall(false)}
-          targetUserId={activeChat.id}
-          targetUserName={activeChat.full_name || activeChat.username}
-          isVideo={isVideoCall}
-          currentUserId={user.id}
-        />
-      )}
     </div>
   );
 }
