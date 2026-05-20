@@ -7,6 +7,7 @@ import MessagesPage from './pages/MessagesPage';
 import PeoplePage from './pages/PeoplePage';
 import FriendsPage from './pages/FriendsPage';
 import FeedPage from './pages/FeedPage';
+import ProfilePage from './pages/ProfilePage'; // Импортируем
 
 function App() {
   const { isAuthenticated, isLoading, checkAuth } = useAuthStore();
@@ -17,8 +18,8 @@ function App() {
 
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-gray-900 text-white">
-        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
+      <div className="flex items-center justify-center min-h-screen bg-[#1a202c] text-white">
+        <div className="animate-spin rounded-full h-12 w-12 border-2 border-t-transparent border-blue-500"></div>
       </div>
     );
   }
@@ -38,6 +39,7 @@ function App() {
             <Route path="/people" element={<PeoplePage />} />
             <Route path="/friends" element={<FriendsPage />} />
             <Route path="/feed" element={<FeedPage />} />
+            <Route path="/profile" element={<ProfilePage />} /> { /* Наш новый путь */ }
             <Route path="*" element={<Navigate to="/messages" replace />} />
           </Route>
         )}
