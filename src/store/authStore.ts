@@ -7,6 +7,7 @@ export interface User {
   full_name: string | null;
   avatar_url: string | null;
   is_online: boolean;
+  last_seen: string;
   created_at?: string;
 }
 
@@ -18,7 +19,7 @@ interface AuthState {
   register: (username: string, fullName: string, password: string) => Promise<boolean>;
   logout: () => Promise<void>;
   updateProfile: (updates: { username: string; full_name: string; avatar_url: string }) => Promise<boolean>;
-  checkAuth: () => void;
+  checkAuth: () => Promise<void>;
 }
 
 const generateSafeEmail = (username: string) => {
@@ -39,7 +40,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         .select('*')
         .eq('id', session.user.id)
         .single();
-
       if (profile) {
         set({ user: profile, isAuthenticated: true });
       }
@@ -49,26 +49,24 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   login: async (username: string, password: string) => {
     set({ isLoading: true });
     const dummyEmail = generateSafeEmail(username);
-
     try {
       const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
         email: dummyEmail,
         password: password,
       });
-
       if (authError) throw authError;
-
       if (authData.user) {
         const { data: profile, error: profileError } = await supabase
           .from('profiles')
           .select('*')
           .eq('id', authData.user.id)
           .single();
-
         if (profileError) throw profileError;
-
-        await supabase.from('profiles').update({ is_online: true }).eq('id', profile.id);
-        set({ user: { ...profile, is_online: true }, isAuthenticated: true, isLoading: false });
+        await supabase
+          .from('profiles')
+          .update({ is_online: true, last_seen: new Date().toISOString() })
+          .eq('id', profile.id);
+        set({ user: { ...profile, is_online: true, last_seen: new Date().toISOString() }, isAuthenticated: true, isLoading: false });
         return true;
       }
       return false;
@@ -84,7 +82,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     set({ isLoading: true });
     const cleanUsername = username.trim().toLowerCase();
     const dummyEmail = generateSafeEmail(username);
-
     try {
       const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
         email: dummyEmail,
@@ -97,23 +94,20 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           }
         }
       });
-
       if (signUpError) throw signUpError;
-
       if (signUpData.user) {
-        // Даем триггеру в базе 1.5 секунды на гарантированное создание профиля
         await new Promise(resolve => setTimeout(resolve, 1500));
-
         const { data: profile, error: profileError } = await supabase
           .from('profiles')
           .select('*')
           .eq('id', signUpData.user.id)
           .single();
-
         if (profileError) throw profileError;
-
-        await supabase.from('profiles').update({ is_online: true }).eq('id', profile.id);
-        set({ user: { ...profile, is_online: true }, isAuthenticated: true, isLoading: false });
+        await supabase
+          .from('profiles')
+          .update({ is_online: true, last_seen: new Date().toISOString() })
+          .eq('id', profile.id);
+        set({ user: { ...profile, is_online: true, last_seen: new Date().toISOString() }, isAuthenticated: true, isLoading: false });
         return true;
       }
       return false;
@@ -128,7 +122,6 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   updateProfile: async (updates: { username: string; full_name: string; avatar_url: string }) => {
     const currentUser = get().user;
     if (!currentUser?.id) return false;
-
     set({ isLoading: true });
     try {
       const { data, error } = await supabase
@@ -141,9 +134,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         .eq('id', currentUser.id)
         .select()
         .single();
-
       if (error) throw error;
-
       if (data) {
         set({ user: data, isLoading: false });
         return true;
@@ -160,7 +151,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   logout: async () => {
     const currentUser = get().user;
     if (currentUser?.id) {
-      await supabase.from('profiles').update({ is_online: false }).eq('id', currentUser.id);
+      await supabase
+        .from('profiles')
+        .update({ is_online: false, last_seen: new Date().toISOString() })
+        .eq('id', currentUser.id);
     }
     await supabase.auth.signOut();
     set({ user: null, isAuthenticated: false });
