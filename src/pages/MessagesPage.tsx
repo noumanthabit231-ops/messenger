@@ -27,7 +27,7 @@ export default function MessagesPage() {
       if (!user?.id) return;
       
       const { data, error } = await supabase
-        .from('users')
+        .from('profiles')
         .select('*')
         .neq('id', user.id);
 
