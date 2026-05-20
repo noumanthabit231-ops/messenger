@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { useAuthStore } from '../store/authStore';
 import { MessageSquare } from 'lucide-react';
-import { isSupabaseConfigured } from '../lib/supabase';
 
 export default function AuthPage() {
   const [username, setUsername] = useState('');
@@ -15,25 +14,23 @@ export default function AuthPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-950 flex items-center justify-center p-4 text-white">
-      <div className="max-w-md w-full bg-gray-900 rounded-2xl shadow-xl p-8 border border-gray-800">
-        <div className="flex justify-center mb-8">
-          <div className="w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center">
+    <div className="min-h-[100dvh] bg-[#1a202c] flex items-center justify-center p-4 text-gray-100">
+      <div className="max-w-md w-full bg-[#2d3748] rounded-2xl shadow-xl p-6 md:p-8 border border-[#4a5568]">
+        <div className="flex justify-center mb-6">
+          <div className="w-16 h-16 bg-blue-500 rounded-full flex items-center justify-center shadow-lg">
             <MessageSquare size={32} className="text-white" />
           </div>
         </div>
         
-        <h1 className="text-3xl font-bold text-center mb-2 text-white">Добро пожаловать</h1>
-        <p className="text-gray-400 text-center mb-8">
-          {isSupabaseConfigured 
-            ? 'Войдите в свой аккаунт' 
-            : 'Демонстрационный режим. Введите любое имя пользователя.'}
+        <h1 className="text-3xl font-bold text-center mb-2 text-white tracking-wide">Risala</h1>
+        <p className="text-gray-300 text-center text-sm mb-8">
+          Введите ваш логин для авторизации или мгновенной регистрации
         </p>
 
-        <form onSubmit={handleSubmit} className="space-y-6">
+        <form onSubmit={handleSubmit} className="space-y-5">
           <div>
-            <label htmlFor="username" className="block text-sm font-medium text-gray-400 mb-2">
-              Имя пользователя (Login)
+            <label htmlFor="username" className="block text-sm font-medium text-gray-300 mb-2">
+              Имя пользователя / Логин
             </label>
             <input
               id="username"
@@ -41,20 +38,20 @@ export default function AuthPage() {
               required
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-white transition-all"
-              placeholder="Введите логин..."
+              className="w-full px-4 py-3 bg-[#1a202c] border border-[#4a5568] rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none text-white transition-all placeholder-gray-500 text-base"
+              placeholder="Например: shamil_dev"
             />
           </div>
 
           <button
             type="submit"
             disabled={isLoading || !username.trim()}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+            className="w-full bg-blue-500 hover:bg-blue-600 text-white font-medium py-3 px-4 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center text-base shadow-md active:scale-[0.98] transform"
           >
             {isLoading ? (
               <div className="animate-spin rounded-full h-5 w-5 border-t-2 border-b-2 border-white"></div>
             ) : (
-              'Войти / Создать'
+              'Войти в аккаунт'
             )}
           </button>
         </form>
