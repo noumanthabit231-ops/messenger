@@ -3,6 +3,7 @@ import { useChatStore } from '../store/chatStore';
 import { useAuthStore } from '../store/authStore';
 import { useBadgeStore } from '../store/badgeStore';
 import { supabase } from '../lib/supabase';
+import { Phone, Video } from 'lucide-react';
 import { Send, Mic, Paperclip, Play, Square, MessageSquare, ChevronLeft, Check, CheckCheck, Clock, Pause } from 'lucide-react';
 import { format } from 'date-fns';
 import clsx from 'clsx';
@@ -221,6 +222,14 @@ export default function MessagesPage() {
   );
 
   return (
+    <div className="flex items-center space-x-2">
+  <button onClick={() => { /* открыть звонок без видео */ }} className="p-2 text-gray-400 hover:text-white rounded-lg">
+    <Phone size={20} />
+  </button>
+  <button onClick={() => { /* открыть видео звонок */ }} className="p-2 text-gray-400 hover:text-white rounded-lg">
+    <Video size={20} />
+  </button>
+</div>
     <div className="flex h-full bg-[#1a202c]">
       {/* Левая панель */}
       <div className={clsx("w-full md:w-80 border-r border-[#4a5568] flex flex-col bg-[#2d3748] h-full shrink-0", activeChat ? "hidden md:flex" : "flex")}>
