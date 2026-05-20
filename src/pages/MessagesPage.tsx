@@ -3,9 +3,11 @@ import { useChatStore } from '../store/chatStore';
 import { useAuthStore } from '../store/authStore';
 import { useBadgeStore } from '../store/badgeStore';
 import { supabase } from '../lib/supabase';
-import { Send, Mic, Paperclip, Play, Square, MessageSquare, ChevronLeft, Check, CheckCheck, Clock } from 'lucide-react';
-import { format } from 'date-fns';
+import { Send, Mic, Paperclip, Play, Square, MessageSquare, ChevronLeft, Check, CheckCheck, Clock, Phone, Video } from 'lucide-react';
+import { format, formatDistanceToNow } from 'date-fns';
+import { ru } from 'date-fns/locale';
 import clsx from 'clsx';
+import CallModal from '../components/CallModal';
 
 export default function MessagesPage() {
   const { user } = useAuthStore();
@@ -16,18 +18,24 @@ export default function MessagesPage() {
   const [realUsers, setRealUsers] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [typingStatus, setTypingStatus] = useState<{ [userId: string]: boolean }>({});
-  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
-  const [audioChunks, setAudioChunks] = useState<Blob[]>([]);
+  const [showCall, setShowCall] = useState(false);
+  const [isVideoCall, setIsVideoCall] = useState(false);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const recordingInterval = useRef<NodeJS.Timeout | null>(null);
   
+  // Refs для realtime каналов и активного чата
   const messagesChannelRef = useRef<any>(null);
   const typingChannelRef = useRef<any>(null);
   const activeChatIdRef = useRef<string | null>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // Ref для медиарекордера
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const streamRef = useRef<MediaStream | null>(null);
 
   // Загрузка пользователей
   useEffect(() => {
@@ -39,6 +47,7 @@ export default function MessagesPage() {
     fetchUsers();
   }, [user]);
 
+  // Отметить сообщения как прочитанные и обновить бейджи
   const markMessagesAsRead = useCallback(async (senderId: string) => {
     if (!user?.id) return;
     const { error } = await supabase
@@ -57,6 +66,15 @@ export default function MessagesPage() {
     }
   }, [user, messages, updateMessageStatus, refreshBadges]);
 
+  // Получение статуса "последний раз" для отображения в списке чатов
+  const getLastSeen = (profile: any) => {
+    if (!profile) return 'Не в сети';
+    if (profile.is_online && new Date(profile.last_seen).getTime() > Date.now() - 2 * 60 * 1000) return 'В сети';
+    if (profile.last_seen) return `был(а) ${formatDistanceToNow(new Date(profile.last_seen), { addSuffix: true, locale: ru })}`;
+    return 'Не в сети';
+  };
+
+  // Эффект для загрузки сообщений и подписки на realtime при смене чата
   useEffect(() => {
     if (!activeChat || !user) return;
 
@@ -120,6 +138,7 @@ export default function MessagesPage() {
     };
   }, [activeChat, user, loadMessages, addMessage, updateMessageStatus, markMessagesAsRead]);
 
+  // Отправка статуса "печатает"
   const emitTyping = useCallback((isTyping: boolean) => {
     if (!activeChat || !user || !typingChannelRef.current) return;
     typingChannelRef.current.send({
@@ -137,15 +156,6 @@ export default function MessagesPage() {
   };
 
   useEffect(() => {
-    if (!activeChat || !user || !typingChannelRef.current) return;
-    typingChannelRef.current.send({
-      type: 'broadcast',
-      event: 'voice_typing',
-      payload: { senderId: user.id, isRecording }
-    });
-  }, [isRecording, activeChat, user]);
-
-  useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
@@ -159,49 +169,67 @@ export default function MessagesPage() {
     }
   };
 
+  // === ГОЛОСОВЫЕ СООБЩЕНИЯ ===
   const startRecording = async () => {
     if (!user || !activeChat) return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
       const recorder = new MediaRecorder(stream);
-      setMediaRecorder(recorder);
-      setAudioChunks([]);
+      mediaRecorderRef.current = recorder;
+      audioChunksRef.current = [];
+      
       recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) setAudioChunks(prev => [...prev, event.data]);
+        if (event.data.size > 0) audioChunksRef.current.push(event.data);
       };
+      
       recorder.onstop = async () => {
-        const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
         const fileName = `${Date.now()}_${user.id}.webm`;
+        
+        // Загружаем в Supabase Storage
         const { data, error } = await supabase.storage
           .from('voice_messages')
           .upload(fileName, audioBlob);
-        if (!error && data) {
-          const { data: { publicUrl } } = supabase.storage
-            .from('voice_messages')
-            .getPublicUrl(fileName);
-          await sendMessage(user.id, activeChat.id, 'Голосовое сообщение', 'voice', publicUrl);
+          
+        if (error) {
+          console.error('Ошибка загрузки голосового:', error);
+          alert('Не удалось отправить голосовое сообщение. Проверьте настройки Storage.');
+          if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
+          setIsRecording(false);
+          setRecordingTime(0);
+          if (recordingInterval.current) clearInterval(recordingInterval.current);
+          return;
         }
-        stream.getTracks().forEach(track => track.stop());
+        
+        const { data: { publicUrl } } = supabase.storage
+          .from('voice_messages')
+          .getPublicUrl(fileName);
+          
+        await sendMessage(user.id, activeChat.id, 'Голосовое сообщение', 'voice', publicUrl);
+        
+        if (streamRef.current) streamRef.current.getTracks().forEach(track => track.stop());
         setIsRecording(false);
         setRecordingTime(0);
         if (recordingInterval.current) clearInterval(recordingInterval.current);
       };
+      
       recorder.start(1000);
       setIsRecording(true);
       setRecordingTime(0);
       recordingInterval.current = setInterval(() => setRecordingTime(prev => prev + 1), 1000);
     } catch (err) {
       console.error('Ошибка доступа к микрофону:', err);
-      alert('Не удалось получить доступ к микрофону');
+      alert('Не удалось получить доступ к микрофону. Разрешите доступ в настройках браузера.');
     }
   };
-
+  
   const stopRecording = () => {
-    if (mediaRecorder && mediaRecorder.state === 'recording') {
-      mediaRecorder.stop();
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.stop();
     }
   };
-
+  
   const handleVoiceButton = () => {
     if (isRecording) {
       stopRecording();
@@ -209,12 +237,13 @@ export default function MessagesPage() {
       startRecording();
     }
   };
-
+  
+  // Функция воспроизведения аудио
   const playAudio = (url: string) => {
     const audio = new Audio(url);
     audio.play().catch(e => console.error('Ошибка воспроизведения:', e));
   };
-
+  
   const formatTime = (seconds: number) => {
     const m = Math.floor(seconds / 60);
     const s = seconds % 60;
@@ -229,7 +258,7 @@ export default function MessagesPage() {
 
   return (
     <div className="flex h-full bg-[#1a202c]">
-      {/* Список чатов */}
+      {/* Левая панель: список чатов */}
       <div className={clsx("w-full md:w-80 border-r border-[#4a5568] flex flex-col bg-[#2d3748] h-full shrink-0", activeChat ? "hidden md:flex" : "flex")}>
         <div className="p-4 border-b border-[#4a5568]">
           <input
@@ -249,17 +278,18 @@ export default function MessagesPage() {
             >
               <div className="relative shrink-0">
                 <img src={realUser.avatar_url || `https://api.dicebear.com/7.x/bottts/svg?seed=${realUser.username}`} alt="" className="w-12 h-12 rounded-full object-cover bg-[#1a202c]" />
-                <div className={clsx("absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full border-2 border-[#2d3748]", realUser.is_online ? "bg-green-500" : "bg-gray-500")}></div>
+                <div className={clsx("absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full border-2 border-[#2d3748]", (realUser.is_online && new Date(realUser.last_seen).getTime() > Date.now() - 2*60*1000) ? "bg-green-500" : "bg-gray-500")}></div>
               </div>
               <div className="flex-1 min-w-0">
                 <h3 className="text-gray-100 font-medium truncate">{realUser.full_name || realUser.username}</h3>
+                <p className="text-gray-400 text-xs truncate">{getLastSeen(realUser)}</p>
               </div>
             </div>
           ))}
         </div>
       </div>
 
-      {/* Область чата */}
+      {/* Правая панель: активный чат */}
       <div className={clsx("flex-1 flex-col h-full bg-[#1a202c]", activeChat ? "flex" : "hidden md:flex")}>
         {activeChat ? (
           <>
@@ -269,10 +299,14 @@ export default function MessagesPage() {
                 <img src={activeChat.avatar_url || `https://api.dicebear.com/7.x/bottts/svg?seed=${activeChat.username}`} alt="" className="w-10 h-10 rounded-full object-cover shrink-0" />
                 <div className="min-w-0">
                   <h2 className="text-gray-100 font-medium truncate">{activeChat.full_name || activeChat.username}</h2>
-                  <p className={clsx("text-xs font-medium", activeChat.is_online ? "text-green-400" : "text-gray-400")}>
-                    {typingStatus[activeChat.id] ? 'Печатает...' : (activeChat.is_online ? 'В сети' : 'Не в сети')}
+                  <p className="text-xs text-gray-400">
+                    {typingStatus[activeChat.id] ? 'Печатает...' : getLastSeen(activeChat)}
                   </p>
                 </div>
+              </div>
+              <div className="flex items-center space-x-2">
+                <button onClick={() => { setIsVideoCall(false); setShowCall(true); }} className="p-2 text-gray-400 hover:text-white rounded-lg"><Phone size={20} /></button>
+                <button onClick={() => { setIsVideoCall(true); setShowCall(true); }} className="p-2 text-gray-400 hover:text-white rounded-lg"><Video size={20} /></button>
               </div>
             </div>
 
@@ -291,7 +325,7 @@ export default function MessagesPage() {
                           >
                             <Play size={14} className="ml-0.5 text-white" />
                           </button>
-                          <span className="text-xs text-gray-300">Голосовое сообщение</span>
+                          <div className="h-1 w-28 bg-[#4a5568] rounded-full"><div className="h-full w-full bg-blue-400 rounded-full"></div></div>
                         </div>
                       )}
                     </div>
@@ -318,13 +352,13 @@ export default function MessagesPage() {
                   {isRecording ? (
                     <div className="flex items-center space-x-3 px-4 py-3"><div className="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse"></div><span className="text-red-500">{formatTime(recordingTime)}</span></div>
                   ) : (
-                    <textarea
-                      value={inputText}
-                      onChange={handleInputChange}
-                      onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-                      placeholder="Напишите сообщение..."
-                      className="w-full bg-transparent border-none focus:ring-0 text-white px-4 py-3 max-h-32 resize-none outline-none"
-                      rows={1}
+                    <textarea 
+                      value={inputText} 
+                      onChange={handleInputChange} 
+                      onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }} 
+                      placeholder="Напишите сообщение..." 
+                      className="w-full bg-transparent border-none focus:ring-0 text-white px-4 py-3 max-h-32 resize-none outline-none" 
+                      rows={1} 
                     />
                   )}
                 </div>
@@ -345,6 +379,17 @@ export default function MessagesPage() {
           </div>
         )}
       </div>
+      
+      {showCall && activeChat && user && (
+        <CallModal
+          isOpen={showCall}
+          onClose={() => setShowCall(false)}
+          targetUserId={activeChat.id}
+          targetUserName={activeChat.full_name || activeChat.username}
+          isVideo={isVideoCall}
+          currentUserId={user.id}
+        />
+      )}
     </div>
   );
 }
