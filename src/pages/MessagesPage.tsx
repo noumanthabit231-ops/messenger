@@ -3,10 +3,10 @@ import { useChatStore } from '../store/chatStore';
 import { useAuthStore } from '../store/authStore';
 import { useBadgeStore } from '../store/badgeStore';
 import { supabase } from '../lib/supabase';
-import { Phone, Video } from 'lucide-react';
-import { Send, Mic, Paperclip, Play, Square, MessageSquare, ChevronLeft, Check, CheckCheck, Clock, Pause } from 'lucide-react';
+import { Send, Mic, Paperclip, Play, Square, MessageSquare, ChevronLeft, Check, CheckCheck, Clock, Pause, Phone, Video } from 'lucide-react';
 import { format } from 'date-fns';
 import clsx from 'clsx';
+import CallModal from '../components/CallModal';
 
 export default function MessagesPage() {
   const { user } = useAuthStore();
@@ -20,6 +20,8 @@ export default function MessagesPage() {
   const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(null);
   const [audioChunks, setAudioChunks] = useState<Blob[]>([]);
   const [currentlyPlaying, setCurrentlyPlaying] = useState<string | null>(null);
+  const [showCall, setShowCall] = useState(false);
+  const [isVideoCall, setIsVideoCall] = useState(false);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [isRecording, setIsRecording] = useState(false);
@@ -128,7 +130,7 @@ export default function MessagesPage() {
     }
   };
 
-  // --- ГОЛОСОВЫЕ СООБЩЕНИЯ (рабочая запись и загрузка) ---
+  // --- ГОЛОСОВЫЕ СООБЩЕНИЯ ---
   const startRecording = async () => {
     if (!user || !activeChat) return;
     try {
@@ -145,7 +147,6 @@ export default function MessagesPage() {
         const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
         const fileName = `${Date.now()}_${user.id}.webm`;
         
-        // Загружаем в Storage
         const { error: uploadError } = await supabase.storage
           .from('voice_messages')
           .upload(fileName, audioBlob, { contentType: 'audio/webm' });
@@ -154,7 +155,6 @@ export default function MessagesPage() {
           console.error('Ошибка загрузки:', uploadError);
           alert('Не удалось отправить голосовое сообщение');
         } else {
-          // Получаем публичный URL
           const { data: urlData } = supabase.storage
             .from('voice_messages')
             .getPublicUrl(fileName);
@@ -192,7 +192,7 @@ export default function MessagesPage() {
     }
   };
 
-  // --- Аудиоплеер с состоянием ---
+  // --- Аудиоплеер ---
   const playAudio = (url: string, messageId: string) => {
     if (currentlyPlaying === messageId && audioRef.current && !audioRef.current.paused) {
       audioRef.current.pause();
@@ -222,14 +222,6 @@ export default function MessagesPage() {
   );
 
   return (
-    <div className="flex items-center space-x-2">
-  <button onClick={() => { /* открыть звонок без видео */ }} className="p-2 text-gray-400 hover:text-white rounded-lg">
-    <Phone size={20} />
-  </button>
-  <button onClick={() => { /* открыть видео звонок */ }} className="p-2 text-gray-400 hover:text-white rounded-lg">
-    <Video size={20} />
-  </button>
-</div>
     <div className="flex h-full bg-[#1a202c]">
       {/* Левая панель */}
       <div className={clsx("w-full md:w-80 border-r border-[#4a5568] flex flex-col bg-[#2d3748] h-full shrink-0", activeChat ? "hidden md:flex" : "flex")}>
@@ -261,7 +253,7 @@ export default function MessagesPage() {
         </div>
       </div>
 
-      {/* Чат */}
+      {/* Область чата */}
       <div className={clsx("flex-1 flex-col h-full bg-[#1a202c]", activeChat ? "flex" : "hidden md:flex")}>
         {activeChat ? (
           <>
@@ -275,6 +267,14 @@ export default function MessagesPage() {
                     {typingStatus[activeChat.id] ? 'Печатает...' : (activeChat.is_online ? 'В сети' : 'Не в сети')}
                   </p>
                 </div>
+              </div>
+              <div className="flex items-center space-x-2">
+                <button onClick={() => { setIsVideoCall(false); setShowCall(true); }} className="p-2 text-gray-400 hover:text-white rounded-lg">
+                  <Phone size={20} />
+                </button>
+                <button onClick={() => { setIsVideoCall(true); setShowCall(true); }} className="p-2 text-gray-400 hover:text-white rounded-lg">
+                  <Video size={20} />
+                </button>
               </div>
             </div>
 
@@ -357,6 +357,18 @@ export default function MessagesPage() {
           </div>
         )}
       </div>
+
+      {/* Модальное окно звонка */}
+      {showCall && activeChat && user && (
+        <CallModal
+          isOpen={showCall}
+          onClose={() => setShowCall(false)}
+          targetUserId={activeChat.id}
+          targetUserName={activeChat.full_name || activeChat.username}
+          isVideo={isVideoCall}
+          currentUserId={user.id}
+        />
+      )}
     </div>
   );
 }
