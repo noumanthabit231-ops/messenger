@@ -7,7 +7,7 @@ export interface Post {
   content: string;
   image_url?: string;
   created_at: string;
-  likes: string[]; // Массив ID пользователей, лайкнувших пост
+  likes: string[];
   comments: any[];
 }
 
@@ -17,6 +17,8 @@ interface PostState {
   fetchPosts: () => Promise<void>;
   addPost: (userId: string, content: string, imageUrl?: string) => Promise<void>;
   deletePost: (postId: string) => Promise<void>;
+  likePost: (postId: string, userId: string) => Promise<void>;
+  unlikePost: (postId: string, userId: string) => Promise<void>;
 }
 
 export const usePostStore = create<PostState>((set, get) => ({
@@ -25,7 +27,6 @@ export const usePostStore = create<PostState>((set, get) => ({
 
   fetchPosts: async () => {
     set({ isLoading: true });
-    // Получаем посты, сортируем по дате (новые сверху)
     const { data: postsData, error } = await supabase
       .from('posts')
       .select('*')
@@ -37,15 +38,19 @@ export const usePostStore = create<PostState>((set, get) => ({
       return;
     }
 
-    // Для каждого поста получаем лайки (пока упрощенно)
     const formattedPosts = await Promise.all(
       postsData.map(async (post) => {
-        const { data: likes } = await supabase.from('post_likes').select('user_id').eq('post_id', post.id);
-        const { data: comments } = await supabase.from('post_comments').select('*').eq('post_id', post.id);
-        
+        const { data: likes } = await supabase
+          .from('post_likes')
+          .select('user_id')
+          .eq('post_id', post.id);
+        const { data: comments } = await supabase
+          .from('post_comments')
+          .select('*')
+          .eq('post_id', post.id);
         return {
           ...post,
-          likes: likes ? likes.map(l => l.user_id) : [],
+          likes: likes ? likes.map((l) => l.user_id) : [],
           comments: comments || [],
         };
       })
@@ -54,31 +59,49 @@ export const usePostStore = create<PostState>((set, get) => ({
     set({ posts: formattedPosts, isLoading: false });
   },
 
-  addPost: async (userId: string, content: string, imageUrl?: string) => {
+  addPost: async (userId, content, imageUrl) => {
     const { error } = await supabase
       .from('posts')
       .insert([{ user_id: userId, content, image_url: imageUrl }]);
+    if (error) console.error(error);
+    else get().fetchPosts();
+  },
 
-    if (error) {
-      console.error('Ошибка при создании поста:', error);
-    } else {
-      get().fetchPosts(); // Обновляем ленту
+  deletePost: async (postId) => {
+    const { error } = await supabase.from('posts').delete().eq('id', postId);
+    if (error) console.error(error);
+    else set((state) => ({ posts: state.posts.filter((p) => p.id !== postId) }));
+  },
+
+  likePost: async (postId, userId) => {
+    const { error } = await supabase
+      .from('post_likes')
+      .insert({ post_id: postId, user_id: userId });
+    if (!error) {
+      set((state) => ({
+        posts: state.posts.map((post) =>
+          post.id === postId
+            ? { ...post, likes: [...post.likes, userId] }
+            : post
+        ),
+      }));
     }
   },
 
-  deletePost: async (postId: string) => {
+  unlikePost: async (postId, userId) => {
     const { error } = await supabase
-      .from('posts')
+      .from('post_likes')
       .delete()
-      .eq('id', postId);
-
-    if (error) {
-      console.error('Ошибка удаления поста:', error);
-    } else {
-      // Убираем пост из локального состояния
+      .eq('post_id', postId)
+      .eq('user_id', userId);
+    if (!error) {
       set((state) => ({
-        posts: state.posts.filter((p) => p.id !== postId)
+        posts: state.posts.map((post) =>
+          post.id === postId
+            ? { ...post, likes: post.likes.filter((id) => id !== userId) }
+            : post
+        ),
       }));
     }
-  }
+  },
 }));
