@@ -24,12 +24,14 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
   const channelRef = useRef<any>(null);
 
   const configuration: RTCConfiguration = {
-    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' }
+    ]
   };
 
   useEffect(() => {
     if (!isOpen) return;
-
     let isActive = true;
 
     const init = async () => {
@@ -53,20 +55,15 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
 
         pc.onicecandidate = (event) => {
           if (event.candidate && channelRef.current) {
-            channelRef.current.send({
-              type: 'broadcast',
-              event: 'ice_candidate',
-              payload: { candidate: event.candidate }
-            });
+            channelRef.current.send({ type: 'broadcast', event: 'ice_candidate', payload: { candidate: event.candidate } });
           }
         };
 
         pc.onconnectionstatechange = () => {
-          if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-            endCall();
-          }
+          if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') endCall();
         };
 
+        // Канал сигнализации (общий для пары)
         const channelName = `call:${[currentUserId, targetUserId].sort().join(':')}`;
         const channel = supabase.channel(channelName);
         channelRef.current = channel;
@@ -84,7 +81,7 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
             await pc.setRemoteDescription(new RTCSessionDescription(payload.answer));
           })
           .on('broadcast', { event: 'ice_candidate' }, async ({ payload }) => {
-            if (!pc) return;
+            if (!pc || !payload.candidate) return;
             try {
               await pc.addIceCandidate(new RTCIceCandidate(payload.candidate));
             } catch (e) { console.warn('ICE candidate error', e); }
@@ -99,10 +96,9 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
               }
             }
           });
-
       } catch (err) {
         console.error('Ошибка инициализации звонка:', err);
-        alert('Не удалось получить доступ к камере/микрофону');
+        alert('Не удалось получить доступ к камере/микрофону. Убедитесь, что сайт открыт по HTTPS.');
         onClose();
       }
     };
