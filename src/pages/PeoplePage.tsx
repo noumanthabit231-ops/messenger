@@ -13,7 +13,7 @@ export default function PeoplePage() {
   useEffect(() => {
     const fetchUsers = async () => {
       if (!user?.id) return;
-      const { data } = await supabase.from('users').select('*').neq('id', user.id);
+      const { data } = await supabase.from('profiles').select('*').neq('id', user.id);
       if (data) setUsers(data);
     };
     fetchUsers();
