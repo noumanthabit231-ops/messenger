@@ -24,77 +24,98 @@ export const useAuthStore = create<AuthState>((set) => ({
   isAuthenticated: false,
   isLoading: false,
 
-  checkAuth: () => {
-    const storedUser = localStorage.getItem('risala_user');
-    if (storedUser) {
-      set({ user: JSON.parse(storedUser), isAuthenticated: true });
+  checkAuth: async () => {
+    // Проверяем сессию через официальный метод Supabase
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.user) {
+      // Загружаем профиль из твоей таблицы
+      const { data: profile } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('id', session.user.id)
+        .single();
+
+      if (profile) {
+        set({ user: profile, isAuthenticated: true });
+      }
     }
   },
 
   login: async (username: string) => {
     set({ isLoading: true });
     const cleanUsername = username.trim().toLowerCase();
+    
+    // Технические email и пароль для работы встроенного Supabase Auth
+    const dummyEmail = `${cleanUsername}@risala.local`;
+    const dummyPassword = `${cleanUsername}-Risala-2026!`; // Надежный пароль, чтобы база не ругалась
 
     try {
-      // 1. Пытаемся найти пользователя в базе данных по username
-      const { data: existingUser, error: searchError } = await supabase
-        .from('users')
-        .select('*')
-        .eq('username', cleanUsername)
-        .maybeSingle();
+      // 1. Пытаемся войти
+      let { data: authData, error: authError } = await supabase.auth.signInWithPassword({
+        email: dummyEmail,
+        password: dummyPassword,
+      });
 
-      if (searchError) throw searchError;
-
-      if (existingUser) {
-        // Если пользователь найден, обновляем его статус на "онлайн"
-        await supabase
-          .from('users')
-          .update({ is_online: true })
-          .eq('id', existingUser.id);
-
-        const updatedUser = { ...existingUser, is_online: true };
-        localStorage.setItem('risala_user', JSON.stringify(updatedUser));
-        set({ user: updatedUser, isAuthenticated: true, isLoading: false });
-        return;
+      // 2. Если такого пользователя нет — регистрируем
+      if (authError && authError.message.includes('Invalid login credentials')) {
+        const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+          email: dummyEmail,
+          password: dummyPassword,
+          options: {
+            data: {
+              // Эти данные поймает твой SQL-триггер "handle_new_user"
+              username: cleanUsername,
+              full_name: username.trim(),
+              avatar_url: `https://api.dicebear.com/7.x/bottts/svg?seed=${cleanUsername}`
+            }
+          }
+        });
+        
+        if (signUpError) throw signUpError;
+        authData = signUpData;
+        
+        // Ждем секунду, чтобы SQL-триггер успел создать запись в public.profiles
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      } else if (authError) {
+        throw authError;
       }
 
-      // 2. Если пользователя нет в таблице, регистрируем его (создаем запись)
-      const { data: newUser, error: insertError } = await supabase
-        .from('users')
-        .insert([
-          {
-            username: cleanUsername,
-            full_name: username.trim(), // Используем оригинальное написание для отображаемого имени
-            avatar_url: `https://api.dicebear.com/7.x/bottts/svg?seed=${cleanUsername}`,
-            is_online: true,
-          },
-        ])
-        .select()
-        .single();
+      // 3. Получаем созданный профиль из базы
+      if (authData.user) {
+        const { data: profile, error: profileError } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('id', authData.user.id)
+          .single();
 
-      if (insertError) throw insertError;
+        if (profileError) throw profileError;
 
-      localStorage.setItem('risala_user', JSON.stringify(newUser));
-      set({ user: newUser, isAuthenticated: true, isLoading: false });
-    } catch (error) {
-      console.error('Ошибка в процессе аутентификации:', error);
-      alert('Не удалось выполнить вход. Проверьте подключение к Supabase или структуру таблицы.');
+        // Обновляем статус онлайна
+        await supabase
+          .from('profiles')
+          .update({ is_online: true })
+          .eq('id', profile.id);
+
+        const updatedUser = { ...profile, is_online: true };
+        set({ user: updatedUser, isAuthenticated: true, isLoading: false });
+      }
+
+    } catch (error: any) {
+      console.error('Ошибка входа/регистрации:', error.message);
+      alert('Ошибка: ' + error.message);
       set({ isLoading: false });
     }
   },
 
   logout: async () => {
-    const storedUser = localStorage.getItem('risala_user');
-    if (storedUser) {
-      const parsed = JSON.parse(storedUser);
-      // При выходе ставим статус оффлайн в базе
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.user) {
       await supabase
-        .from('users')
+        .from('profiles')
         .update({ is_online: false })
-        .eq('id', parsed.id)
-        .catch((err) => console.error(err));
+        .eq('id', session.user.id);
     }
-    localStorage.removeItem('risala_user');
+    await supabase.auth.signOut();
     set({ user: null, isAuthenticated: false });
   },
 }));
