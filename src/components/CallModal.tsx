@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { X, Mic, MicOff, Video, VideoOff, PhoneOff } from 'lucide-react';
 
+let ringbackAudio: HTMLAudioElement | null = null; // звук "гудки" для исходящего
+
 interface CallModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -16,20 +18,38 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
-  const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'ended'>('connecting');
-  const [callStarted, setCallStarted] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<'calling' | 'connecting' | 'connected' | 'ended'>('calling');
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const channelRef = useRef<any>(null);
+  const callEndedRef = useRef(false);
 
   const configuration: RTCConfiguration = {
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }]
   };
 
-  // Запись звонка в БД при завершении
+  // Воспроизведение гудков для исходящего звонка (пока не ответят)
+  const startRingback = () => {
+    if (!ringbackAudio) {
+      ringbackAudio = new Audio('https://www.soundjay.com/phone/phone-ringing-01.mp3');
+      ringbackAudio.loop = true;
+      ringbackAudio.volume = 0.5;
+    }
+    ringbackAudio.play().catch(e => console.warn('Ringback play error', e));
+  };
+  const stopRingback = () => {
+    if (ringbackAudio) {
+      ringbackAudio.pause();
+      ringbackAudio.currentTime = 0;
+    }
+  };
+
+  // Запись звонка в БД
   const saveCallRecord = async (status: 'missed' | 'answered' | 'rejected' | 'cancelled') => {
+    if (callEndedRef.current) return;
+    callEndedRef.current = true;
     await supabase.from('calls').insert({
       caller_id: currentUserId,
       callee_id: targetUserId,
@@ -40,12 +60,33 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
     });
   };
 
+  // Завершение звонка (отправляем сигнал другому)
+  const endCall = async () => {
+    if (connectionStatus === 'ended') return;
+    setConnectionStatus('ended');
+    stopRingback();
+    // Отправляем сигнал о завершении
+    if (channelRef.current) {
+      channelRef.current.send({ type: 'broadcast', event: 'hangup', payload: {} });
+    }
+    // Закрываем соединения
+    if (peerConnectionRef.current) peerConnectionRef.current.close();
+    if (localStream) localStream.getTracks().forEach(track => track.stop());
+    if (remoteStream) remoteStream.getTracks().forEach(track => track.stop());
+    // Сохраняем запись, если ещё не сохранена
+    if (connectionStatus === 'calling') await saveCallRecord('cancelled');
+    else if (connectionStatus === 'connected') await saveCallRecord('answered');
+    onClose();
+  };
+
   useEffect(() => {
     if (!isOpen) return;
     let isActive = true;
+    callEndedRef.current = false;
 
     const init = async () => {
       try {
+        // Локальный поток
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: isVideo });
         if (!isActive) return;
         setLocalStream(stream);
@@ -60,10 +101,8 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
           setRemoteStream(event.streams[0]);
           if (remoteVideoRef.current) remoteVideoRef.current.srcObject = event.streams[0];
           setConnectionStatus('connected');
-          if (!callStarted) {
-            setCallStarted(true);
-            saveCallRecord('answered');
-          }
+          stopRingback();
+          saveCallRecord('answered');
         };
 
         pc.onicecandidate = (event) => {
@@ -74,11 +113,11 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
 
         pc.onconnectionstatechange = () => {
           if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
-            if (callStarted) saveCallRecord('answered'); // уже записано
             endCall();
           }
         };
 
+        // Канал сигнализации (общий для пары)
         const channelName = `call:${[currentUserId, targetUserId].sort().join(':')}`;
         const channel = supabase.channel(channelName);
         channelRef.current = channel;
@@ -95,24 +134,26 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
             if (!pc) return;
             await pc.setRemoteDescription(new RTCSessionDescription(payload.answer));
             setConnectionStatus('connected');
-            if (!callStarted) {
-              setCallStarted(true);
-              saveCallRecord('answered');
-            }
+            stopRingback();
+            saveCallRecord('answered');
           })
           .on('broadcast', { event: 'ice_candidate' }, async ({ payload }) => {
             if (!pc || !payload.candidate) return;
             try { await pc.addIceCandidate(new RTCIceCandidate(payload.candidate)); } catch (e) { console.warn(e); }
           })
+          .on('broadcast', { event: 'hangup' }, () => {
+            endCall();
+          })
           .subscribe(async (status) => {
             if (status === 'SUBSCRIBED') {
-              // Тот, кто вызвал модалку, является инициатором
-              const isInitiator = true; // этот модал всегда инициатор
+              const isInitiator = true; // Этот модал открыт инициатором
               if (isInitiator && pc.signalingState === 'stable') {
+                setConnectionStatus('calling');
+                startRingback();
                 const offer = await pc.createOffer();
                 await pc.setLocalDescription(offer);
                 channel.send({ type: 'broadcast', event: 'offer', payload: { offer } });
-                // Запись о звонке со статусом "missed" временно, потом обновится
+                // Запись о пропущенном (временно)
                 await saveCallRecord('missed');
               }
             }
@@ -127,9 +168,10 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
 
     return () => {
       isActive = false;
-      if (localStream) localStream.getTracks().forEach(track => track.stop());
+      stopRingback();
       if (peerConnectionRef.current) peerConnectionRef.current.close();
       if (channelRef.current) supabase.removeChannel(channelRef.current);
+      if (localStream) localStream.getTracks().forEach(track => track.stop());
     };
   }, [isOpen, targetUserId, currentUserId, isVideo]);
 
@@ -145,10 +187,6 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
     const videoTrack = localStream.getVideoTracks()[0];
     videoTrack.enabled = !videoTrack.enabled;
     setIsCameraOff(!videoTrack.enabled);
-  };
-  const endCall = () => {
-    setConnectionStatus('ended');
-    onClose();
   };
 
   if (!isOpen) return null;
@@ -173,7 +211,12 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
           {isVideo && <button onClick={toggleCamera} className="p-3 bg-gray-700 rounded-full">{isCameraOff ? <VideoOff size={24} className="text-red-500" /> : <Video size={24} className="text-white" />}</button>}
           <button onClick={endCall} className="p-3 bg-red-600 rounded-full"><PhoneOff size={24} className="text-white" /></button>
         </div>
-        <div className="text-center pb-4 text-white">{connectionStatus === 'connecting' ? 'Соединение...' : connectionStatus === 'connected' && `Звонок с ${targetUserName}`}</div>
+        <div className="text-center pb-4 text-white">
+          {connectionStatus === 'calling' && 'Вызов...'}
+          {connectionStatus === 'connecting' && 'Соединение...'}
+          {connectionStatus === 'connected' && `Звонок с ${targetUserName}`}
+          {connectionStatus === 'ended' && 'Звонок завершён'}
+        </div>
       </div>
     </div>
   );
