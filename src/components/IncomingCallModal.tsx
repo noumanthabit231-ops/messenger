@@ -1,8 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { Phone, PhoneOff, Video } from 'lucide-react';
 
-let incomingRingtone: HTMLAudioElement | null = null;
-
 interface IncomingCallModalProps {
   callerId: string;
   callerName: string;
@@ -13,21 +11,46 @@ interface IncomingCallModalProps {
 
 const IncomingCallModal: React.FC<IncomingCallModalProps> = ({ callerName, isVideo, onAnswer, onReject }) => {
   const [seconds, setSeconds] = React.useState(0);
+  const ringtoneOscRef = useRef<OscillatorNode | null>(null);
+  const ringtoneGainRef = useRef<GainNode | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+
   useEffect(() => {
-    // Звук входящего звонка
-    if (!incomingRingtone) {
-      incomingRingtone = new Audio('https://www.soundjay.com/phone/phone-ringing-01.mp3');
-      incomingRingtone.loop = true;
-      incomingRingtone.volume = 0.5;
-    }
-    incomingRingtone.play().catch(e => console.warn(e));
-    const interval = setInterval(() => setSeconds(s => s + 1), 1000);
-    return () => {
-      clearInterval(interval);
-      if (incomingRingtone) {
-        incomingRingtone.pause();
-        incomingRingtone.currentTime = 0;
+    // Звук входящего звонка (прерывистый)
+    try {
+      if (!audioCtxRef.current) {
+        audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
       }
+      const ctx = audioCtxRef.current;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = 440;
+      gain.gain.value = 0.3;
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      let toggle = true;
+      const interval = setInterval(() => {
+        if (!ringtoneGainRef.current) return;
+        toggle = !toggle;
+        ringtoneGainRef.current.gain.value = toggle ? 0.3 : 0;
+      }, 800);
+      ringtoneOscRef.current = osc;
+      ringtoneGainRef.current = gain;
+      (osc as any).interval = interval;
+    } catch (e) { console.warn(e); }
+
+    const timer = setInterval(() => setSeconds(s => s + 1), 1000);
+    return () => {
+      clearInterval(timer);
+      if (ringtoneOscRef.current) {
+        clearInterval((ringtoneOscRef.current as any).interval);
+        ringtoneOscRef.current.stop();
+        ringtoneOscRef.current.disconnect();
+      }
+      if (ringtoneGainRef.current) ringtoneGainRef.current.disconnect();
+      if (audioCtxRef.current) audioCtxRef.current.close().catch(console.warn);
     };
   }, []);
 
