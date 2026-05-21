@@ -17,6 +17,7 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
   const [isMuted, setIsMuted] = useState(false);
   const [isCameraOff, setIsCameraOff] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'ended'>('connecting');
+  const [callStarted, setCallStarted] = useState(false);
 
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
@@ -25,6 +26,18 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
 
   const configuration: RTCConfiguration = {
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }]
+  };
+
+  // Запись звонка в БД при завершении
+  const saveCallRecord = async (status: 'missed' | 'answered' | 'rejected' | 'cancelled') => {
+    await supabase.from('calls').insert({
+      caller_id: currentUserId,
+      callee_id: targetUserId,
+      status,
+      call_type: isVideo ? 'video' : 'audio',
+      started_at: new Date().toISOString(),
+      ended_at: new Date().toISOString()
+    });
   };
 
   useEffect(() => {
@@ -47,14 +60,23 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
           setRemoteStream(event.streams[0]);
           if (remoteVideoRef.current) remoteVideoRef.current.srcObject = event.streams[0];
           setConnectionStatus('connected');
+          if (!callStarted) {
+            setCallStarted(true);
+            saveCallRecord('answered');
+          }
         };
+
         pc.onicecandidate = (event) => {
           if (event.candidate && channelRef.current) {
             channelRef.current.send({ type: 'broadcast', event: 'ice_candidate', payload: { candidate: event.candidate } });
           }
         };
+
         pc.onconnectionstatechange = () => {
-          if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') endCall();
+          if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+            if (callStarted) saveCallRecord('answered'); // уже записано
+            endCall();
+          }
         };
 
         const channelName = `call:${[currentUserId, targetUserId].sort().join(':')}`;
@@ -72,6 +94,11 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
           .on('broadcast', { event: 'answer' }, async ({ payload }) => {
             if (!pc) return;
             await pc.setRemoteDescription(new RTCSessionDescription(payload.answer));
+            setConnectionStatus('connected');
+            if (!callStarted) {
+              setCallStarted(true);
+              saveCallRecord('answered');
+            }
           })
           .on('broadcast', { event: 'ice_candidate' }, async ({ payload }) => {
             if (!pc || !payload.candidate) return;
@@ -79,21 +106,25 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
           })
           .subscribe(async (status) => {
             if (status === 'SUBSCRIBED') {
-              const isInitiator = currentUserId.localeCompare(targetUserId) < 0;
+              // Тот, кто вызвал модалку, является инициатором
+              const isInitiator = true; // этот модал всегда инициатор
               if (isInitiator && pc.signalingState === 'stable') {
                 const offer = await pc.createOffer();
                 await pc.setLocalDescription(offer);
                 channel.send({ type: 'broadcast', event: 'offer', payload: { offer } });
+                // Запись о звонке со статусом "missed" временно, потом обновится
+                await saveCallRecord('missed');
               }
             }
           });
       } catch (err) {
         console.error(err);
-        alert('Не удалось получить доступ к камере/микрофону. Убедитесь, что сайт открыт по HTTPS.');
+        alert('Не удалось получить доступ к камере/микрофону.');
         onClose();
       }
     };
     init();
+
     return () => {
       isActive = false;
       if (localStream) localStream.getTracks().forEach(track => track.stop());
@@ -115,7 +146,10 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
     videoTrack.enabled = !videoTrack.enabled;
     setIsCameraOff(!videoTrack.enabled);
   };
-  const endCall = () => { setConnectionStatus('ended'); onClose(); };
+  const endCall = () => {
+    setConnectionStatus('ended');
+    onClose();
+  };
 
   if (!isOpen) return null;
 
@@ -144,4 +178,5 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
     </div>
   );
 };
+
 export default CallModal;
