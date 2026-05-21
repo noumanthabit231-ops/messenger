@@ -12,12 +12,12 @@ export default function CallsPage() {
   useEffect(() => {
     const fetchCalls = async () => {
       if (!user?.id) return;
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('calls')
         .select('*, caller:caller_id(full_name, username), callee:callee_id(full_name, username)')
         .or(`caller_id.eq.${user.id},callee_id.eq.${user.id}`)
         .order('started_at', { ascending: false });
-      if (data) setCalls(data);
+      if (!error && data) setCalls(data);
     };
     fetchCalls();
   }, [user]);
@@ -27,6 +27,20 @@ export default function CallsPage() {
     return call.caller;
   };
 
+  const getStatusIcon = (status: string, isOutgoing: boolean) => {
+    if (status === 'missed') return <PhoneMissed size={16} className="text-red-500" />;
+    if (status === 'answered') return <Phone size={16} className="text-green-500" />;
+    if (status === 'rejected') return <PhoneOff size={16} className="text-yellow-500" />;
+    return <Clock size={16} className="text-gray-500" />;
+  };
+
+  const getStatusText = (status: string, isOutgoing: boolean) => {
+    if (status === 'missed') return isOutgoing ? 'Не дозвонились' : 'Пропущен';
+    if (status === 'answered') return 'Состоялся';
+    if (status === 'rejected') return 'Отклонён';
+    return 'Отменён';
+  };
+
   return (
     <div className="p-4 md:p-6 max-w-2xl mx-auto h-full overflow-y-auto">
       <h1 className="text-2xl md:text-3xl font-bold text-white mb-6">История звонков</h1>
@@ -34,22 +48,17 @@ export default function CallsPage() {
         {calls.map(call => {
           const other = getOtherUser(call);
           const isOutgoing = call.caller_id === user?.id;
-          const statusIcon = call.status === 'missed' ? <PhoneMissed size={18} className="text-red-500" /> :
-                             call.status === 'answered' ? <Phone size={18} className="text-green-500" /> :
-                             <PhoneOff size={18} className="text-yellow-500" />;
           return (
             <div key={call.id} className="bg-[#2d3748] rounded-xl p-4 flex items-center justify-between">
               <div className="flex items-center space-x-3">
                 <div className="w-10 h-10 rounded-full bg-gray-700 flex items-center justify-center">
-                  {call.call_type === 'video' ? <Video size={20} /> : <Phone size={20} />}
+                  {call.call_type === 'video' ? <Video size={20} className="text-gray-300" /> : <Phone size={20} className="text-gray-300" />}
                 </div>
                 <div>
-                  <p className="text-white font-medium">{other?.full_name || other?.username}</p>
-                  <p className="text-gray-400 text-xs flex items-center gap-1">
-                    {statusIcon}
-                    <span>
-                      {isOutgoing ? 'Исходящий' : 'Входящий'} • {call.status === 'missed' ? 'Пропущен' : call.status === 'answered' ? 'Состоялся' : 'Отклонён'}
-                    </span>
+                  <p className="text-white font-medium">{other?.full_name || other?.username || 'Удалённый пользователь'}</p>
+                  <p className="text-gray-400 text-xs flex items-center gap-1 mt-1">
+                    {getStatusIcon(call.status, isOutgoing)}
+                    <span>{isOutgoing ? 'Исходящий' : 'Входящий'} • {getStatusText(call.status, isOutgoing)}</span>
                   </p>
                 </div>
               </div>
