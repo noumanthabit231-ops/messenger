@@ -2,8 +2,6 @@ import React, { useEffect, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import { X, Mic, MicOff, Video, VideoOff, PhoneOff } from 'lucide-react';
 
-let ringbackAudio: HTMLAudioElement | null = null; // звук "гудки" для исходящего
-
 interface CallModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -25,55 +23,83 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const channelRef = useRef<any>(null);
   const callEndedRef = useRef(false);
+  const ringbackOscillatorRef = useRef<OscillatorNode | null>(null);
+  const ringbackGainRef = useRef<GainNode | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
 
   const configuration: RTCConfiguration = {
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }]
   };
 
-  // Воспроизведение гудков для исходящего звонка (пока не ответят)
+  // Генерация гудков через Web Audio (не требует внешних файлов)
   const startRingback = () => {
-    if (!ringbackAudio) {
-      ringbackAudio = new Audio('https://www.soundjay.com/phone/phone-ringing-01.mp3');
-      ringbackAudio.loop = true;
-      ringbackAudio.volume = 0.5;
-    }
-    ringbackAudio.play().catch(e => console.warn('Ringback play error', e));
+    try {
+      if (!audioContextRef.current) {
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      }
+      const ctx = audioContextRef.current;
+      const oscillator = ctx.createOscillator();
+      const gain = ctx.createGain();
+      oscillator.type = 'sine';
+      oscillator.frequency.value = 440; // Ля
+      gain.gain.value = 0.3;
+      oscillator.connect(gain);
+      gain.connect(ctx.destination);
+      oscillator.start();
+      // Модуляция: включение/выключение каждые 2 секунды
+      let toggle = true;
+      const interval = setInterval(() => {
+        if (!ringbackGainRef.current) return;
+        toggle = !toggle;
+        ringbackGainRef.current.gain.value = toggle ? 0.3 : 0;
+      }, 1000);
+      ringbackOscillatorRef.current = oscillator;
+      ringbackGainRef.current = gain;
+      (oscillator as any).interval = interval;
+    } catch (e) { console.warn('Ringback error', e); }
   };
   const stopRingback = () => {
-    if (ringbackAudio) {
-      ringbackAudio.pause();
-      ringbackAudio.currentTime = 0;
+    if (ringbackOscillatorRef.current) {
+      clearInterval((ringbackOscillatorRef.current as any).interval);
+      ringbackOscillatorRef.current.stop();
+      ringbackOscillatorRef.current.disconnect();
+      ringbackOscillatorRef.current = null;
+    }
+    if (ringbackGainRef.current) {
+      ringbackGainRef.current.disconnect();
+      ringbackGainRef.current = null;
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(console.warn);
+      audioContextRef.current = null;
     }
   };
 
-  // Запись звонка в БД
   const saveCallRecord = async (status: 'missed' | 'answered' | 'rejected' | 'cancelled') => {
     if (callEndedRef.current) return;
     callEndedRef.current = true;
-    await supabase.from('calls').insert({
-      caller_id: currentUserId,
-      callee_id: targetUserId,
-      status,
-      call_type: isVideo ? 'video' : 'audio',
-      started_at: new Date().toISOString(),
-      ended_at: new Date().toISOString()
-    });
+    try {
+      await supabase.from('calls').insert({
+        caller_id: currentUserId,
+        callee_id: targetUserId,
+        status,
+        call_type: isVideo ? 'video' : 'audio',
+        started_at: new Date().toISOString(),
+        ended_at: new Date().toISOString()
+      });
+    } catch (err) { console.warn('Save call error', err); }
   };
 
-  // Завершение звонка (отправляем сигнал другому)
   const endCall = async () => {
     if (connectionStatus === 'ended') return;
     setConnectionStatus('ended');
     stopRingback();
-    // Отправляем сигнал о завершении
     if (channelRef.current) {
       channelRef.current.send({ type: 'broadcast', event: 'hangup', payload: {} });
     }
-    // Закрываем соединения
     if (peerConnectionRef.current) peerConnectionRef.current.close();
     if (localStream) localStream.getTracks().forEach(track => track.stop());
     if (remoteStream) remoteStream.getTracks().forEach(track => track.stop());
-    // Сохраняем запись, если ещё не сохранена
     if (connectionStatus === 'calling') await saveCallRecord('cancelled');
     else if (connectionStatus === 'connected') await saveCallRecord('answered');
     onClose();
@@ -86,7 +112,6 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
 
     const init = async () => {
       try {
-        // Локальный поток
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: isVideo });
         if (!isActive) return;
         setLocalStream(stream);
@@ -117,7 +142,6 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
           }
         };
 
-        // Канал сигнализации (общий для пары)
         const channelName = `call:${[currentUserId, targetUserId].sort().join(':')}`;
         const channel = supabase.channel(channelName);
         channelRef.current = channel;
@@ -146,14 +170,13 @@ const CallModal: React.FC<CallModalProps> = ({ isOpen, onClose, targetUserId, ta
           })
           .subscribe(async (status) => {
             if (status === 'SUBSCRIBED') {
-              const isInitiator = true; // Этот модал открыт инициатором
+              const isInitiator = true;
               if (isInitiator && pc.signalingState === 'stable') {
                 setConnectionStatus('calling');
                 startRingback();
                 const offer = await pc.createOffer();
                 await pc.setLocalDescription(offer);
                 channel.send({ type: 'broadcast', event: 'offer', payload: { offer } });
-                // Запись о пропущенном (временно)
                 await saveCallRecord('missed');
               }
             }
