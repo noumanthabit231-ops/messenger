@@ -7,6 +7,7 @@ import { Send, Mic, Paperclip, Play, Square, MessageSquare, ChevronLeft, Check, 
 import { format } from 'date-fns';
 import clsx from 'clsx';
 import CallModal from '../components/CallModal';
+import IncomingCallModal from '../components/IncomingCallModal';
 import toast from 'react-hot-toast';
 
 export default function MessagesPage() {
@@ -24,17 +25,24 @@ export default function MessagesPage() {
   const [showCall, setShowCall] = useState(false);
   const [isVideoCall, setIsVideoCall] = useState(false);
   
+  // Входящий звонок
+  const [incomingCall, setIncomingCall] = useState<{ callerId: string; callerName: string; isVideo: boolean } | null>(null);
+  
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const recordingInterval = useRef<NodeJS.Timeout | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   
+  // Refs для каналов, чтобы не было мерцания
   const messagesChannelRef = useRef<any>(null);
   const typingChannelRef = useRef<any>(null);
+  const callChannelRef = useRef<any>(null);
   const activeChatIdRef = useRef<string | null>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const isUnmountedRef = useRef(false);
 
+  // Загрузка пользователей
   useEffect(() => {
     const fetchUsers = async () => {
       if (!user?.id) return;
@@ -44,6 +52,7 @@ export default function MessagesPage() {
     fetchUsers();
   }, [user]);
 
+  // Отметить прочитанные
   const markMessagesAsRead = useCallback(async (senderId: string) => {
     if (!user?.id) return;
     await supabase.from('messages').update({ is_read: true }).eq('receiver_id', user.id).eq('sender_id', senderId).eq('is_read', false);
@@ -51,40 +60,28 @@ export default function MessagesPage() {
     if (refreshBadges) await refreshBadges(user.id);
   }, [user, messages, updateMessageStatus, refreshBadges]);
 
-  // Основной эффект для realtime
+  // Эффект для подписки на каналы активного чата
   useEffect(() => {
-    if (!activeChat || !user) return;
+    if (!activeChat || !user || isUnmountedRef.current) return;
+    const chatId = activeChat.id;
+    activeChatIdRef.current = chatId;
+    loadMessages(user.id, chatId);
+    markMessagesAsRead(chatId);
 
-    // Сохраняем ID текущего чата в ref для защиты от гонок
-    activeChatIdRef.current = activeChat.id;
-    
-    // Загружаем сообщения
-    loadMessages(user.id, activeChat.id);
-    // Отмечаем как прочитанные
-    markMessagesAsRead(activeChat.id);
+    // Уничтожаем старые каналы
+    if (messagesChannelRef.current) supabase.removeChannel(messagesChannelRef.current);
+    if (typingChannelRef.current) supabase.removeChannel(typingChannelRef.current);
+    if (callChannelRef.current) supabase.removeChannel(callChannelRef.current);
 
-    // Удаляем старые каналы
-    if (messagesChannelRef.current) {
-      supabase.removeChannel(messagesChannelRef.current);
-      messagesChannelRef.current = null;
-    }
-    if (typingChannelRef.current) {
-      supabase.removeChannel(typingChannelRef.current);
-      typingChannelRef.current = null;
-    }
-
-    // Создаём новый канал для сообщений
+    // Канал сообщений
     messagesChannelRef.current = supabase
-      .channel(`messages:${user.id}:${activeChat.id}`)
+      .channel(`messages:${user.id}:${chatId}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `receiver_id=eq.${user.id}` }, (payload) => {
-        // Проверяем, что это сообщение от текущего активного чата
         if (payload.new.sender_id === activeChatIdRef.current) {
           addMessage({ ...payload.new, status: 'sent' });
           markMessagesAsRead(activeChatIdRef.current);
         } else {
-          // Сообщение от другого чата – показываем уведомление, но не добавляем в текущий список
-          const otherUser = realUsers.find(u => u.id === payload.new.sender_id);
-          toast.success(`📨 Новое сообщение от ${otherUser?.full_name || otherUser?.username || 'пользователя'}`);
+          toast.success(`Новое сообщение от ${activeChat?.full_name || activeChat?.username}`);
         }
       })
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'messages', filter: `receiver_id=eq.${user.id}` }, (payload) => {
@@ -94,8 +91,8 @@ export default function MessagesPage() {
       })
       .subscribe();
 
-    // Канал для статуса "печатает"
-    typingChannelRef.current = supabase.channel(`typing:${user.id}:${activeChat.id}`);
+    // Канал печатания
+    typingChannelRef.current = supabase.channel(`typing:${user.id}:${chatId}`);
     typingChannelRef.current
       .on('broadcast', { event: 'typing' }, ({ payload }) => {
         if (payload.senderId === activeChatIdRef.current) {
@@ -104,19 +101,61 @@ export default function MessagesPage() {
       })
       .subscribe();
 
-    // Очистка при размонтировании или смене чата
+    // Канал для входящих звонков (слушаем broadcast на звонок)
+    callChannelRef.current = supabase.channel(`calls:${user.id}`);
+    callChannelRef.current
+      .on('broadcast', { event: 'incoming_call' }, ({ payload }) => {
+        if (payload.callerId !== user.id && payload.calleeId === user.id) {
+          setIncomingCall({
+            callerId: payload.callerId,
+            callerName: payload.callerName,
+            isVideo: payload.isVideo
+          });
+        }
+      })
+      .subscribe();
+
     return () => {
-      if (messagesChannelRef.current) {
-        supabase.removeChannel(messagesChannelRef.current);
-        messagesChannelRef.current = null;
-      }
-      if (typingChannelRef.current) {
-        supabase.removeChannel(typingChannelRef.current);
-        typingChannelRef.current = null;
-      }
+      if (messagesChannelRef.current) supabase.removeChannel(messagesChannelRef.current);
+      if (typingChannelRef.current) supabase.removeChannel(typingChannelRef.current);
+      if (callChannelRef.current) supabase.removeChannel(callChannelRef.current);
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
     };
-  }, [activeChat, user, loadMessages, addMessage, updateMessageStatus, markMessagesAsRead, realUsers]);
+  }, [activeChat, user, loadMessages, addMessage, updateMessageStatus, markMessagesAsRead]);
+
+  // Обработка входящего звонка
+  const acceptCall = async () => {
+    if (!incomingCall) return;
+    setShowCall(true);
+    setIsVideoCall(incomingCall.isVideo);
+    setActiveChat(realUsers.find(u => u.id === incomingCall.callerId) || null);
+    setIncomingCall(null);
+  };
+  const rejectCall = async () => {
+    if (!incomingCall) return;
+    await supabase.from('calls').insert({
+      caller_id: incomingCall.callerId,
+      callee_id: user?.id,
+      status: 'rejected',
+      call_type: incomingCall.isVideo ? 'video' : 'audio',
+      started_at: new Date().toISOString(),
+      ended_at: new Date().toISOString()
+    });
+    setIncomingCall(null);
+  };
+
+  // Отправка звонка (инициируем)
+  const startCall = (video: boolean) => {
+    if (!activeChat || !user) return;
+    setIsVideoCall(video);
+    setShowCall(true);
+    // Отправляем broadcast о входящем звонке
+    supabase.channel(`calls:${activeChat.id}`).send({
+      type: 'broadcast',
+      event: 'incoming_call',
+      payload: { callerId: user.id, calleeId: activeChat.id, callerName: user.full_name || user.username, isVideo: video }
+    });
+  };
 
   const emitTyping = useCallback((isTyping: boolean) => {
     if (!activeChat || !user || !typingChannelRef.current) return;
@@ -142,6 +181,7 @@ export default function MessagesPage() {
     }
   };
 
+  // Голосовые
   const startRecording = async () => {
     if (!user || !activeChat) return;
     try {
@@ -184,6 +224,7 @@ export default function MessagesPage() {
 
   return (
     <div className="flex h-full bg-[#1a202c]">
+      {/* Левая панель */}
       <div className={clsx("w-full md:w-80 border-r border-[#4a5568] flex flex-col bg-[#2d3748] h-full shrink-0", activeChat ? "hidden md:flex" : "flex")}>
         <div className="p-4 border-b border-[#4a5568]">
           <input type="text" placeholder="Поиск собеседников..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full bg-[#1a202c] border border-[#4a5568] rounded-xl px-4 py-2.5 text-gray-200 focus:ring-2 focus:ring-blue-500 outline-none text-sm" />
@@ -200,6 +241,8 @@ export default function MessagesPage() {
           ))}
         </div>
       </div>
+
+      {/* Чат */}
       <div className={clsx("flex-1 flex-col h-full bg-[#1a202c]", activeChat ? "flex" : "hidden md:flex")}>
         {activeChat ? (
           <>
@@ -213,8 +256,8 @@ export default function MessagesPage() {
                 </div>
               </div>
               <div className="flex items-center space-x-2">
-                <button onClick={() => { setIsVideoCall(false); setShowCall(true); }} className="p-2 text-gray-400 hover:text-white rounded-lg"><Phone size={20} /></button>
-                <button onClick={() => { setIsVideoCall(true); setShowCall(true); }} className="p-2 text-gray-400 hover:text-white rounded-lg"><Video size={20} /></button>
+                <button onClick={() => startCall(false)} className="p-2 text-gray-400 hover:text-white rounded-lg"><Phone size={20} /></button>
+                <button onClick={() => startCall(true)} className="p-2 text-gray-400 hover:text-white rounded-lg"><Video size={20} /></button>
               </div>
             </div>
             <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-4 no-scrollbar">
@@ -233,9 +276,9 @@ export default function MessagesPage() {
                     </div>
                     <div className="flex items-center space-x-1 mt-1 px-1">
                       <span className="text-[10px] text-gray-500">{format(new Date(msg.created_at), 'HH:mm')}</span>
-                      {isMine && (msg.status === 'sending' && <Clock size={10} className="text-gray-400" />)}
-                      {isMine && (msg.status === 'sent' && <Check size={12} className="text-gray-400" />)}
-                      {isMine && (msg.status === 'read' && <CheckCheck size={12} className="text-blue-400" />)}
+                      {isMine && msg.status === 'sending' && <Clock size={10} className="text-gray-400" />}
+                      {isMine && msg.status === 'sent' && <Check size={12} className="text-gray-400" />}
+                      {isMine && msg.status === 'read' && <CheckCheck size={12} className="text-blue-400" />}
                     </div>
                   </div>
                 );
@@ -266,7 +309,16 @@ export default function MessagesPage() {
           <div className="flex-1 flex items-center justify-center flex-col text-gray-500"><MessageSquare size={32} className="mb-4 text-gray-400" /><p>Выберите чат для начала общения</p></div>
         )}
       </div>
-      {showCall && activeChat && user && <CallModal isOpen={showCall} onClose={() => setShowCall(false)} targetUserId={activeChat.id} targetUserName={activeChat.full_name || activeChat.username} isVideo={isVideoCall} currentUserId={user.id} />}
+
+      {/* Модалка исходящего звонка */}
+      {showCall && activeChat && user && (
+        <CallModal isOpen={showCall} onClose={() => setShowCall(false)} targetUserId={activeChat.id} targetUserName={activeChat.full_name || activeChat.username} isVideo={isVideoCall} currentUserId={user.id} />
+      )}
+
+      {/* Модалка входящего звонка */}
+      {incomingCall && (
+        <IncomingCallModal callerId={incomingCall.callerId} callerName={incomingCall.callerName} isVideo={incomingCall.isVideo} onAnswer={acceptCall} onReject={rejectCall} />
+      )}
     </div>
   );
 }
