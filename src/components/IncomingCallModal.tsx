@@ -1,5 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { Phone, PhoneOff, Video } from 'lucide-react';
+
+let incomingRingtone: HTMLAudioElement | null = null;
 
 interface IncomingCallModalProps {
   callerId: string;
@@ -10,10 +12,23 @@ interface IncomingCallModalProps {
 }
 
 const IncomingCallModal: React.FC<IncomingCallModalProps> = ({ callerName, isVideo, onAnswer, onReject }) => {
-  const [seconds, setSeconds] = useState(0);
+  const [seconds, setSeconds] = React.useState(0);
   useEffect(() => {
+    // Звук входящего звонка
+    if (!incomingRingtone) {
+      incomingRingtone = new Audio('https://www.soundjay.com/phone/phone-ringing-01.mp3');
+      incomingRingtone.loop = true;
+      incomingRingtone.volume = 0.5;
+    }
+    incomingRingtone.play().catch(e => console.warn(e));
     const interval = setInterval(() => setSeconds(s => s + 1), 1000);
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      if (incomingRingtone) {
+        incomingRingtone.pause();
+        incomingRingtone.currentTime = 0;
+      }
+    };
   }, []);
 
   return (
