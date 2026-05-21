@@ -24,8 +24,6 @@ export default function MessagesPage() {
   const [currentlyPlaying, setCurrentlyPlaying] = useState<string | null>(null);
   const [showCall, setShowCall] = useState(false);
   const [isVideoCall, setIsVideoCall] = useState(false);
-  
-  // Входящий звонок
   const [incomingCall, setIncomingCall] = useState<{ callerId: string; callerName: string; isVideo: boolean } | null>(null);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -34,13 +32,11 @@ export default function MessagesPage() {
   const recordingInterval = useRef<NodeJS.Timeout | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   
-  // Refs для каналов, чтобы не было мерцания
   const messagesChannelRef = useRef<any>(null);
   const typingChannelRef = useRef<any>(null);
   const callChannelRef = useRef<any>(null);
   const activeChatIdRef = useRef<string | null>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const isUnmountedRef = useRef(false);
 
   // Загрузка пользователей
   useEffect(() => {
@@ -60,20 +56,18 @@ export default function MessagesPage() {
     if (refreshBadges) await refreshBadges(user.id);
   }, [user, messages, updateMessageStatus, refreshBadges]);
 
-  // Эффект для подписки на каналы активного чата
+  // Подписка на чат
   useEffect(() => {
-    if (!activeChat || !user || isUnmountedRef.current) return;
+    if (!activeChat || !user) return;
     const chatId = activeChat.id;
     activeChatIdRef.current = chatId;
     loadMessages(user.id, chatId);
     markMessagesAsRead(chatId);
 
-    // Уничтожаем старые каналы
     if (messagesChannelRef.current) supabase.removeChannel(messagesChannelRef.current);
     if (typingChannelRef.current) supabase.removeChannel(typingChannelRef.current);
     if (callChannelRef.current) supabase.removeChannel(callChannelRef.current);
 
-    // Канал сообщений
     messagesChannelRef.current = supabase
       .channel(`messages:${user.id}:${chatId}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `receiver_id=eq.${user.id}` }, (payload) => {
@@ -91,7 +85,6 @@ export default function MessagesPage() {
       })
       .subscribe();
 
-    // Канал печатания
     typingChannelRef.current = supabase.channel(`typing:${user.id}:${chatId}`);
     typingChannelRef.current
       .on('broadcast', { event: 'typing' }, ({ payload }) => {
@@ -101,7 +94,6 @@ export default function MessagesPage() {
       })
       .subscribe();
 
-    // Канал для входящих звонков (слушаем broadcast на звонок)
     callChannelRef.current = supabase.channel(`calls:${user.id}`);
     callChannelRef.current
       .on('broadcast', { event: 'incoming_call' }, ({ payload }) => {
@@ -113,6 +105,10 @@ export default function MessagesPage() {
           });
         }
       })
+      .on('broadcast', { event: 'hangup' }, () => {
+        setShowCall(false);
+        setIncomingCall(null);
+      })
       .subscribe();
 
     return () => {
@@ -123,7 +119,6 @@ export default function MessagesPage() {
     };
   }, [activeChat, user, loadMessages, addMessage, updateMessageStatus, markMessagesAsRead]);
 
-  // Обработка входящего звонка
   const acceptCall = async () => {
     if (!incomingCall) return;
     setShowCall(true);
@@ -144,12 +139,10 @@ export default function MessagesPage() {
     setIncomingCall(null);
   };
 
-  // Отправка звонка (инициируем)
   const startCall = (video: boolean) => {
     if (!activeChat || !user) return;
     setIsVideoCall(video);
     setShowCall(true);
-    // Отправляем broadcast о входящем звонке
     supabase.channel(`calls:${activeChat.id}`).send({
       type: 'broadcast',
       event: 'incoming_call',
@@ -181,7 +174,6 @@ export default function MessagesPage() {
     }
   };
 
-  // Голосовые
   const startRecording = async () => {
     if (!user || !activeChat) return;
     try {
@@ -224,7 +216,6 @@ export default function MessagesPage() {
 
   return (
     <div className="flex h-full bg-[#1a202c]">
-      {/* Левая панель */}
       <div className={clsx("w-full md:w-80 border-r border-[#4a5568] flex flex-col bg-[#2d3748] h-full shrink-0", activeChat ? "hidden md:flex" : "flex")}>
         <div className="p-4 border-b border-[#4a5568]">
           <input type="text" placeholder="Поиск собеседников..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} className="w-full bg-[#1a202c] border border-[#4a5568] rounded-xl px-4 py-2.5 text-gray-200 focus:ring-2 focus:ring-blue-500 outline-none text-sm" />
@@ -241,8 +232,6 @@ export default function MessagesPage() {
           ))}
         </div>
       </div>
-
-      {/* Чат */}
       <div className={clsx("flex-1 flex-col h-full bg-[#1a202c]", activeChat ? "flex" : "hidden md:flex")}>
         {activeChat ? (
           <>
@@ -309,16 +298,8 @@ export default function MessagesPage() {
           <div className="flex-1 flex items-center justify-center flex-col text-gray-500"><MessageSquare size={32} className="mb-4 text-gray-400" /><p>Выберите чат для начала общения</p></div>
         )}
       </div>
-
-      {/* Модалка исходящего звонка */}
-      {showCall && activeChat && user && (
-        <CallModal isOpen={showCall} onClose={() => setShowCall(false)} targetUserId={activeChat.id} targetUserName={activeChat.full_name || activeChat.username} isVideo={isVideoCall} currentUserId={user.id} />
-      )}
-
-      {/* Модалка входящего звонка */}
-      {incomingCall && (
-        <IncomingCallModal callerId={incomingCall.callerId} callerName={incomingCall.callerName} isVideo={incomingCall.isVideo} onAnswer={acceptCall} onReject={rejectCall} />
-      )}
+      {showCall && activeChat && user && <CallModal isOpen={showCall} onClose={() => setShowCall(false)} targetUserId={activeChat.id} targetUserName={activeChat.full_name || activeChat.username} isVideo={isVideoCall} currentUserId={user.id} />}
+      {incomingCall && <IncomingCallModal callerId={incomingCall.callerId} callerName={incomingCall.callerName} isVideo={incomingCall.isVideo} onAnswer={acceptCall} onReject={rejectCall} />}
     </div>
   );
 }
