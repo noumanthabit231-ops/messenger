@@ -10,6 +10,7 @@ import MessagesPage from './pages/MessagesPage';
 import FriendsPage from './pages/FriendsPage';
 import FeedPage from './pages/FeedPage';
 import ProfilePage from './pages/ProfilePage';
+import CallsPage from './pages/CallsPage'; // ← страница истории звонков
 
 function App() {
   const { isAuthenticated, isLoading, checkAuth, user } = useAuthStore();
@@ -38,7 +39,10 @@ function App() {
       <Toaster position="top-right" toastOptions={{ style: { background: '#2d3748', color: '#fff' } }} />
       <Routes>
         {!isAuthenticated ? (
-          <><Route path="/auth" element={<AuthPage />} /><Route path="*" element={<Navigate to="/auth" replace />} /></>
+          <>
+            <Route path="/auth" element={<AuthPage />} />
+            <Route path="*" element={<Navigate to="/auth" replace />} />
+          </>
         ) : (
           <Route element={<Layout />}>
             <Route path="/" element={<Navigate to="/messages" replace />} />
@@ -46,6 +50,7 @@ function App() {
             <Route path="/friends" element={<FriendsPage />} />
             <Route path="/feed" element={<FeedPage />} />
             <Route path="/profile" element={<ProfilePage />} />
+            <Route path="/calls" element={<CallsPage />} /> {/* ← новая страница */}
             <Route path="*" element={<Navigate to="/messages" replace />} />
           </Route>
         )}
@@ -53,4 +58,5 @@ function App() {
     </BrowserRouter>
   );
 }
+
 export default App;
